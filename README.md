@@ -1,4 +1,6 @@
-# SEQ School Explorer
+# SEQ Schools Explorer
+
+Live site: https://amparaj.github.io/seq-schools/
 
 A map of every school in South East Queensland: 1,110 schools across the 12 ShapingSEQ council areas, with enrolments, ICSEA, staffing and student mix for each year from 2008 to 2025.
 

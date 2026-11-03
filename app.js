@@ -1,4 +1,4 @@
-/* SEQ School Explorer — plain Leaflet, no build step. */
+/* SEQ Schools Explorer — plain Leaflet, no build step. */
 (() => {
   "use strict";
 
@@ -7,12 +7,12 @@
     { key: "Catholic", short: "Catholic", cls: "cath", css: "--cath", shape: "square" },
     { key: "Independent", short: "Independent", cls: "ind", css: "--ind", shape: "diamond" },
   ];
-  const TYPE_COLORS = { Primary: "#7a5af5", Secondary: "#d1497f", Combined: "#2f9bb8" };
+  const TYPE_COLORS = { Primary: "#e0663f", Secondary: "#2f6db3", Combined: "#4f9a3a" };
   const ICSEA_BANDS = [
-    { max: 900, label: "< 900", color: "#e4d9f7" },
-    { max: 1000, label: "900–999", color: "#b39ce6" },
-    { max: 1100, label: "1000–1099", color: "#7b55cf" },
-    { max: Infinity, label: "1100+", color: "#43208f" },
+    { max: 900, label: "< 900", color: "#f3d9df" },
+    { max: 1000, label: "900–999", color: "#dc93a6" },
+    { max: 1100, label: "1000–1099", color: "#a8405f" },
+    { max: Infinity, label: "1100+", color: "#5e1029" },
   ];
   const ICSEA_NONE = "#9aa1ad";
 
@@ -393,10 +393,10 @@
         { label: "Boys", v: 100 - gp, c: "#3d7fc4" },
       ]) : `<p class="muted small">Not reported.</p>`)}
       ${chartCard("Socio-educational advantage", "quarters", q.some((v) => v != null) ? stackBar([
-        { label: "Bottom", v: q[0], c: "#e4d9f7" },
-        { label: "Lower middle", v: q[1], c: "#b39ce6" },
-        { label: "Upper middle", v: q[2], c: "#7b55cf" },
-        { label: "Top", v: q[3], c: "#43208f" },
+        { label: "Bottom", v: q[0], c: "#f3d9df" },
+        { label: "Lower middle", v: q[1], c: "#dc93a6" },
+        { label: "Upper middle", v: q[2], c: "#a8405f" },
+        { label: "Top", v: q[3], c: "#5e1029" },
       ]) : `<p class="muted small">Not reported.</p>`,
         "Share of students in each national quarter of socio-educational advantage. Australia-wide, each quarter holds 25%.")}
       <div class="stats">
@@ -415,7 +415,7 @@
         "Enrolments divided by teaching staff (FTE). Descriptive, not a quality measure."),
       chartCard("Teachers", "FTE", lineChart({ values: s.tfte, color: col, bench: bench("tfte"), fmtV: r1 })),
       chartCard("Non-teaching staff", "FTE", lineChart({ values: s.nfte, color: col, bench: bench("nfte"), fmtV: r1 })),
-      chartCard("ICSEA", "index", lineChart({ values: s.icsea, color: "#7b55cf", bench: bench("icsea") }),
+      chartCard("ICSEA", "index", lineChart({ values: s.icsea, color: "#a8405f", bench: bench("icsea") }),
         "Index of Community Socio-Educational Advantage. The national average is 1000."),
       chartCard("Language other than English", "%", lineChart({ values: s.lbote, color: col, bench: bench("lbote") })),
       chartCard("Indigenous students", "%", lineChart({ values: s.ind, color: col, bench: bench("ind") })),
@@ -490,7 +490,7 @@
     const gov = cssVar("--gov");
     return sel
       ? { color: gov, weight: 3, opacity: 1, fillColor: gov, fillOpacity: 0.14 }
-      : { color: dark ? "#c9d1df" : "#33415c", weight: 1, opacity: dark ? 0.55 : 0.6, fillColor: dark ? "#c9d1df" : "#33415c", fillOpacity: 0.03 };
+      : { color: dark ? "#e3cfd4" : "#6b1a33", weight: 1, opacity: dark ? 0.55 : 0.6, fillColor: dark ? "#e3cfd4" : "#6b1a33", fillOpacity: 0.03 };
   }
 
   async function setCatchments(key) {
@@ -728,6 +728,8 @@
       );
       L.control.zoom({ position: "bottomright" }).addTo(map);
       L.control.scale({ position: "bottomleft", imperial: false }).addTo(map);
+      // Docked panels change the map's width, so redraw tiles whenever it resizes.
+      new ResizeObserver(() => map.invalidateSize()).observe($("map"));
       setTiles();
       rebuildGroups();
       setupControls();
