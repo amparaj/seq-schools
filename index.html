@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SEQ School Explorer</title>
+  <meta name="description" content="Map of South East Queensland schools with enrolments, ICSEA and staffing from ACARA open data, 2008 to 2025.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231d6fb8'/%3E%3Cpath d='M6 13l10-5 10 5-10 5z M10 15.5v5c0 1.5 3 3 6 3s6-1.5 6-3v-5' fill='none' stroke='white' stroke-width='2' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.min.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M2 9l10-5 10 5-10 5z M6 11.5v5c0 1.5 3 3 6 3s6-1.5 6-3v-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+      </span>
+      <h1>SEQ School Explorer</h1>
+    </div>
+
+    <div class="search">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M20 20l-4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <input id="search" type="search" placeholder="Search schools, suburbs, postcodes" autocomplete="off" aria-label="Search schools">
+      <kbd>Ctrl K</kbd>
+      <ul id="search-results" class="search-results" role="listbox" hidden></ul>
+    </div>
+
+    <div class="chips" id="sector-chips"></div>
+
+    <div class="theme-toggle" role="group" aria-label="Theme">
+      <button data-theme-set="auto" title="Match system">
+        <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 20h8M12 16v4" stroke="currentColor" stroke-width="2"/></svg>
+      </button>
+      <button data-theme-set="light" title="Light">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+      <button data-theme-set="dark" title="Dark">
+        <svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="stage">
+    <div id="map" aria-label="Map of schools"></div>
+
+    <button id="panel-open" class="panel-open" title="Show layers" hidden>
+      <svg viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5z M3 13l9 5 9-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+    </button>
+
+    <aside id="panel" class="panel" aria-label="Layers and filters">
+      <div class="panel-head">
+        <h2>Layers</h2>
+        <button id="panel-close" class="icon-btn" title="Hide panel">&times;</button>
+      </div>
+
+      <section class="panel-sec">
+        <h3>Sectors <span class="mono muted" id="sector-count"></span></h3>
+        <div id="sector-toggles"></div>
+        <p class="hint">Each sector has its own shape as well as colour. Dashed, faded markers didn't report that year.</p>
+      </section>
+
+      <section class="panel-sec">
+        <h3>Colour markers by</h3>
+        <div class="seg" id="color-by">
+          <button data-v="sector" class="on">Sector</button>
+          <button data-v="type">Type</button>
+          <button data-v="icsea">ICSEA</button>
+        </div>
+        <div id="color-legend" class="legend"></div>
+      </section>
+
+      <section class="panel-sec">
+        <h3>Filter</h3>
+        <div class="pills" id="type-filter">
+          <button data-v="Primary" class="on">Primary</button>
+          <button data-v="Secondary" class="on">Secondary</button>
+          <button data-v="Combined" class="on">Combined</button>
+        </div>
+        <label class="field">
+          <span>Council area</span>
+          <select id="lga-filter"><option value="">All of SEQ</option></select>
+        </label>
+        <label class="switch"><span>Special schools</span><input type="checkbox" id="opt-special" checked><i></i></label>
+      </section>
+
+      <section class="panel-sec">
+        <h3>State school catchments <span class="mono muted" id="catch-status">off</span></h3>
+        <div class="seg" id="catch-by">
+          <button data-v="" class="on">Off</button>
+          <button data-v="primary">Primary</button>
+          <button data-v="junior">Junior</button>
+          <button data-v="senior">Senior</button>
+        </div>
+        <p class="hint">Queensland Department of Education enrolment catchments for 2026: primary (Prep–6), junior secondary (7–10) and senior secondary (11–12). Click inside one to open its school.</p>
+      </section>
+
+      <section class="panel-sec">
+        <label class="switch"><span>Size markers by enrolment</span><input type="checkbox" id="opt-size" checked><i></i></label>
+        <label class="switch"><span>Cluster nearby schools</span><input type="checkbox" id="opt-cluster" checked><i></i></label>
+        <label class="switch"><span>Include schools not reporting</span><input type="checkbox" id="opt-inactive"><i></i></label>
+      </section>
+
+      <p class="source">Data: <a href="https://www.acara.edu.au/contact-us/acara-data-access" target="_blank" rel="noopener">ACARA School Profile &amp; School Location</a>; catchments: <a href="https://www.data.qld.gov.au/dataset/queensland-state-schools-geographic-information" target="_blank" rel="noopener">Queensland Government</a> (CC BY 4.0). NAPLAN results are on each school's My School page.</p>
+    </aside>
+
+    <aside id="detail" class="detail" aria-label="School details" hidden></aside>
+  </main>
+
+  <footer class="timeline">
+    <button id="play" class="play" title="Play through years" aria-label="Play">
+      <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>
+    </button>
+    <div class="year-readout">
+      <div id="year-label" class="year">2025</div>
+      <div class="muted small"><span id="year-total"></span></div>
+    </div>
+    <div id="bars" class="bars" role="listbox" aria-label="School year"></div>
+    <div class="bar-legend" id="bar-legend"></div>
+  </footer>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
