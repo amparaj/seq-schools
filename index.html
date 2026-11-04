@@ -58,6 +58,17 @@
       </div>
 
       <section class="panel-sec">
+        <h3>Year <span class="mono muted">2008–2025</span></h3>
+        <div class="year-row">
+          <button id="play" class="play" title="Play through years" aria-label="Play">
+            <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>
+          </button>
+          <div id="year-label" class="year">2025</div>
+          <input type="range" id="year-range" min="0" max="17" value="17" aria-label="School year">
+        </div>
+      </section>
+
+      <section class="panel-sec">
         <h3>Sectors <span class="mono muted" id="sector-count"></span></h3>
         <div id="sector-toggles"></div>
         <p class="hint">Each sector has its own shape as well as colour. Dashed, faded markers didn't report that year.</p>
@@ -68,7 +79,7 @@
         <div class="seg" id="color-by">
           <button data-v="sector" class="on">Sector</button>
           <button data-v="type">Type</button>
-          <button data-v="icsea">ICSEA</button>
+          <button data-v="icsea" title="Index of Community Socio-Educational Advantage">ICSEA</button>
         </div>
         <div id="color-legend" class="legend"></div>
       </section>
@@ -99,28 +110,17 @@
       </section>
 
       <section class="panel-sec">
-        <label class="switch"><span>Size markers by enrolment</span><input type="checkbox" id="opt-size" checked><i></i></label>
+        <label class="switch"><span>Size schools by enrolment</span><input type="checkbox" id="opt-size" checked><i></i></label>
         <label class="switch"><span>Cluster nearby schools</span><input type="checkbox" id="opt-cluster" checked><i></i></label>
         <label class="switch"><span>Include schools not reporting</span><input type="checkbox" id="opt-inactive"><i></i></label>
       </section>
 
-      <p class="source">Data: <a href="https://www.acara.edu.au/contact-us/acara-data-access" target="_blank" rel="noopener">ACARA School Profile &amp; School Location</a>; catchments: <a href="https://www.data.qld.gov.au/dataset/queensland-state-schools-geographic-information" target="_blank" rel="noopener">Queensland Government</a> (CC BY 4.0). NAPLAN results are on each school's My School page.</p>
+      <p class="source">Data: <a href="https://www.acara.edu.au/contact-us/acara-data-access" target="_blank" rel="noopener">ACARA School Profile &amp; School Location</a>; catchments: <a href="https://www.data.qld.gov.au/dataset/queensland-state-schools-geographic-information" target="_blank" rel="noopener">Queensland Government</a> (CC BY 4.0); attendance, surveys and class sizes: state school annual reports, State of Queensland (Department of Education) (CC BY 4.0). NAPLAN results are on each school's My School page.</p>
     </aside>
 
     <aside id="detail" class="detail" aria-label="School details" hidden></aside>
   </main>
 
-  <footer class="timeline">
-    <button id="play" class="play" title="Play through years" aria-label="Play">
-      <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>
-    </button>
-    <div class="year-readout">
-      <div id="year-label" class="year">2025</div>
-      <div class="muted small"><span id="year-total"></span></div>
-    </div>
-    <div id="bars" class="bars" role="listbox" aria-label="School year"></div>
-    <div class="bar-legend" id="bar-legend"></div>
-  </footer>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.min.js"></script>

@@ -15,6 +15,10 @@
     { max: Infinity, label: "1100+", color: "#5e1029" },
   ];
   const ICSEA_NONE = "#9aa1ad";
+  const ICSEA = `<abbr title="Index of Community Socio-Educational Advantage">ICSEA</abbr>`;
+  // Compared schools get categorical slots 1–4 (CSS vars --c1..--c4), fixed by position.
+  const MAX_COMPARE = 4;
+  const cmpColor = (k) => cssVar(`--c${k + 1}`);
 
   const state = {
     yearIdx: 0,
@@ -27,6 +31,8 @@
     cluster: true,
     inactive: false,
     selected: null,
+    compare: [], // further school ids shown alongside `selected`
+    picking: false, // while true, map clicks and search add to the comparison
     tab: "overview",
     catch: "",
   };
@@ -154,7 +160,7 @@
       const fill = colorFor(s, { sectorColor: sectorColors[s.sector] });
       const icon = L.divIcon({
         html: shapeSvg(sec.shape, size, fill, !active),
-        className: "school-icon" + (state.selected === s.id ? " sel" : ""),
+        className: "school-icon" + (inView(s.id) ? " sel" : ""),
         iconSize: [size, size],
       });
       const m = L.marker([s.lat, s.lng], { icon, keyboard: false, riseOnHover: true, zIndexOffset: s.enr[state.yearIdx] || 0 });
@@ -162,7 +168,7 @@
         `<strong>${esc(s.name)}</strong><br><span class="muted">${esc(s.type)} · ${active ? fmt(s.enr[state.yearIdx]) + " students" : "not reporting"}</span>`,
         { direction: "top", offset: [0, -size / 2] }
       );
-      m.on("click", () => select(s.id, false));
+      m.on("click", () => choose(s.id, false));
       batches[s.sector].push(m);
     }
 
@@ -176,7 +182,7 @@
     renderChips(counts);
     renderSectorToggles(counts);
     renderLegend();
-    renderTimeline();
+    renderYear();
     if (state.selected != null) renderDetail();
   }
 
@@ -212,39 +218,16 @@
     } else if (state.colorBy === "icsea") {
       el.innerHTML =
         ICSEA_BANDS.map((b) => `<span><i style="background:${b.color}"></i>${b.label}</span>`).join("") +
-        `<span><i style="background:${ICSEA_NONE}"></i>No ICSEA</span>`;
+        `<span><i style="background:${ICSEA_NONE}"></i>No ${ICSEA}</span>`;
     } else {
-      el.innerHTML = "";
+      el.innerHTML = SECTORS.map((sec) => `<span>${glyph(sec, 12)}${sec.key}</span>`).join("");
     }
   }
 
-  /* ---------------- timeline ---------------- */
-  function renderTimeline() {
-    const totals = YEARS.map((_, i) => {
-      const t = {};
-      for (const s of DATA.schools) {
-        if (!passesFilters(s) || !state.layers.has(s.sector)) continue;
-        const e = s.enr[i];
-        if (e != null) t[s.sector] = (t[s.sector] || 0) + e;
-      }
-      return t;
-    });
-    const sum = (t) => Object.values(t).reduce((a, b) => a + b, 0);
-    const max = Math.max(1, ...totals.map(sum));
-
-    $("bars").innerHTML = YEARS.map((y, i) => {
-      const segs = SECTORS.slice().reverse()
-        .map((sec) => {
-          const v = totals[i][sec.key] || 0;
-          return v ? `<div class="seg-s" style="height:${(v / max) * 100}%;background:var(${sec.css})"></div>` : "";
-        }).join("");
-      return `<button class="bar${i === state.yearIdx ? " on" : ""}" data-i="${i}" role="option" aria-selected="${i === state.yearIdx}"
-        title="${y}: ${fmt(sum(totals[i]))} students">${segs}<span class="yl">${String(y).slice(2)}</span></button>`;
-    }).join("");
-
-    const yr = YEARS[state.yearIdx];
-    $("year-label").textContent = yr;
-    $("year-total").textContent = `${fmt(sum(totals[state.yearIdx]))} students`;
+  /* ---------------- year control ---------------- */
+  function renderYear() {
+    $("year-label").textContent = YEARS[state.yearIdx];
+    $("year-range").value = state.yearIdx;
   }
 
   function setYear(i) {
@@ -302,11 +285,14 @@
     return ticks;
   }
 
-  function lineChart({ values, color, bench, fmtV = fmt }) {
+  // `series` is [{values, color, name}]; a single school can pass `values` and `color` instead.
+  function lineChart({ values, color, series, bench, fmtV = fmt }) {
     const W = 300, H = 132, L = 38, R = 8, T = 8, B = 20;
-    const pts = values.map((v, i) => [i, v]).filter(([, v]) => v != null);
-    if (pts.length < 2) return `<p class="muted small">Not enough data to chart.</p>`;
-    const all = pts.map(([, v]) => v);
+    series = (series || [{ values, color }]).map((sr) => ({
+      ...sr, pts: sr.values.map((v, i) => [i, v]).filter(([, v]) => v != null),
+    }));
+    if (!series.some((sr) => sr.pts.length >= 2)) return `<p class="muted small">Not enough data to chart.</p>`;
+    const all = series.flatMap((sr) => sr.pts.map(([, v]) => v));
     if (bench) bench.forEach((b) => b && all.push(b.p25, b.p75));
     const ticks = niceTicks(Math.min(0, ...all) < 0 ? Math.min(...all) : Math.min(...all) * 0.9, Math.max(...all));
     const lo = ticks[0], hi = ticks[ticks.length - 1];
@@ -332,11 +318,13 @@
       }
     }
     g += `<line x1="${x(ci)}" x2="${x(ci)}" y1="${T}" y2="${H - B}" class="cursor"/>`;
-    const d = pts.map(([i, v], k) => `${k && pts[k - 1][0] === i - 1 ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
-    g += `<path d="${d}" fill="none" stroke="${color}" stroke-width="2"/>`;
-    pts.forEach(([i, v]) => {
-      const on = i === ci;
-      g += `<circle cx="${x(i)}" cy="${y(v)}" r="${on ? 4.5 : 2.6}" fill="${color}" ${on ? 'stroke="var(--bg)" stroke-width="2"' : ""}><title>${YEARS[i]}: ${fmtV(v)}</title></circle>`;
+    series.forEach(({ pts, color, name }) => {
+      const d = pts.map(([i, v], k) => `${k && pts[k - 1][0] === i - 1 ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
+      g += `<path d="${d}" fill="none" stroke="${color}" stroke-width="2"/>`;
+      pts.forEach(([i, v]) => {
+        const on = i === ci;
+        g += `<circle cx="${x(i)}" cy="${y(v)}" r="${on ? 4.5 : 2.6}" fill="${color}" ${on ? 'stroke="var(--bg)" stroke-width="2"' : ""}><title>${name ? esc(name) + ", " : ""}${YEARS[i]}: ${fmtV(v)}</title></circle>`;
+      });
     });
     return `<svg class="chart" viewBox="0 0 ${W} ${H}">${g}</svg>`;
   }
@@ -345,14 +333,17 @@
     return `<div class="card"><div class="card-head"><h4>${title}</h4><span class="mono muted">${unit}</span></div>${body}${note ? `<p class="note">${note}</p>` : ""}</div>`;
   }
 
-  function stackBar(parts) {
+  function stackBar(parts, legend = true) {
     return `<div class="stackbar">${parts.filter((p) => p.v > 0).map((p) =>
       `<span style="flex:${p.v};background:${p.c}" title="${esc(p.label)}: ${p.v}%"></span>`).join("")}</div>
-      <div class="legend">${parts.map((p) => `<span><i style="background:${p.c}"></i>${esc(p.label)} ${p.v ?? "–"}%</span>`).join("")}</div>`;
+      ${legend ? stackLegend(parts) : ""}`;
+  }
+  function stackLegend(parts, values = true) {
+    return `<div class="legend">${parts.map((p) => `<span><i style="background:${p.c}"></i>${esc(p.label)}${values ? ` ${p.v ?? "–"}%` : ""}</span>`).join("")}</div>`;
   }
 
   /* ---------------- detail panel ---------------- */
-  const TABS = [["overview", "Overview"], ["students", "Students"], ["trends", "Trends"], ["naplan", "NAPLAN"]];
+  const TABS = [["overview", "Overview"], ["students", "Students"], ["trends", "Trends"], ["report", "Report"], ["naplan", "NAPLAN"]];
   const CATCH_FOR_TYPE = { Primary: "primary", Combined: "primary", Secondary: "junior" };
 
   function benchLine(s, key, i, fmtV = fmt) {
@@ -368,7 +359,7 @@
     return `
       <div class="stats">
         <div class="stat"><div class="k">Students</div><div class="v">${fmt(s.enr[i])}</div>${benchLine(s, "enr", i, (v) => fmt(Math.round(v)))}</div>
-        <div class="stat"><div class="k">ICSEA</div><div class="v">${fmt(s.icsea[i])}${s.pct[i] != null ? `<small>${s.pct[i]}th pct</small>` : ""}</div>${benchLine(s, "icsea", i, (v) => fmt(Math.round(v)))}</div>
+        <div class="stat"><div class="k">${ICSEA}</div><div class="v">${fmt(s.icsea[i])}${s.pct[i] != null ? `<small>${s.pct[i]}th pct</small>` : ""}</div>${benchLine(s, "icsea", i, (v) => fmt(Math.round(v)))}</div>
         <div class="stat"><div class="k">Teachers (FTE)</div><div class="v">${r1(s.tfte[i])}</div>${benchLine(s, "tfte", i, r1)}</div>
         <div class="stat"><div class="k">Students per teacher</div><div class="v">${r1(s.ratio[i])}</div>${benchLine(s, "ratio", i, r1)}</div>
         <div class="stat"><div class="k">Non-teaching staff (FTE)</div><div class="v">${r1(s.nfte[i])}</div>${benchLine(s, "nfte", i, r1)}</div>
@@ -383,22 +374,31 @@
       </div>`;
   }
 
-  function studentsTab(s, i) {
+  // Stack-bar parts for one school and year; null when the school didn't report.
+  function genderParts(s, i) {
     const g = s.girls[i], b = s.boys[i], tot = (g || 0) + (b || 0);
-    const gp = tot ? Math.round((g / tot) * 100) : null;
+    if (!tot) return null;
+    const gp = Math.round((g / tot) * 100);
+    return [{ label: "Girls", v: gp, c: "#c25aa0" }, { label: "Boys", v: 100 - gp, c: "#3d7fc4" }];
+  }
+  function quarterParts(s, i) {
     const q = [s.q1[i], s.q2[i], s.q3[i], s.q4[i]];
+    if (!q.some((v) => v != null)) return null;
+    return [
+      { label: "Bottom", v: q[0], c: "#f3d9df" },
+      { label: "Lower middle", v: q[1], c: "#dc93a6" },
+      { label: "Upper middle", v: q[2], c: "#a8405f" },
+      { label: "Top", v: q[3], c: "#5e1029" },
+    ];
+  }
+  const QUARTER_NOTE = "Share of students in each national quarter of socio-educational advantage. Australia-wide, each quarter holds 25%.";
+
+  function studentsTab(s, i) {
+    const g = genderParts(s, i), q = quarterParts(s, i);
+    const tot = (s.girls[i] || 0) + (s.boys[i] || 0);
     return `
-      ${chartCard("Girls and boys", fmt(tot || null), tot ? stackBar([
-        { label: "Girls", v: gp, c: "#c25aa0" },
-        { label: "Boys", v: 100 - gp, c: "#3d7fc4" },
-      ]) : `<p class="muted small">Not reported.</p>`)}
-      ${chartCard("Socio-educational advantage", "quarters", q.some((v) => v != null) ? stackBar([
-        { label: "Bottom", v: q[0], c: "#f3d9df" },
-        { label: "Lower middle", v: q[1], c: "#dc93a6" },
-        { label: "Upper middle", v: q[2], c: "#a8405f" },
-        { label: "Top", v: q[3], c: "#5e1029" },
-      ]) : `<p class="muted small">Not reported.</p>`,
-        "Share of students in each national quarter of socio-educational advantage. Australia-wide, each quarter holds 25%.")}
+      ${chartCard("Girls and boys", fmt(tot || null), g ? stackBar(g) : `<p class="muted small">Not reported.</p>`)}
+      ${chartCard("Socio-educational advantage", "quarters", q ? stackBar(q) : `<p class="muted small">Not reported.</p>`, QUARTER_NOTE)}
       <div class="stats">
         <div class="stat"><div class="k">Indigenous students</div><div class="v">${s.ind[i] ?? "–"}<small>%</small></div>${benchLine(s, "ind", i, (v) => Math.round(v) + "%")}</div>
         <div class="stat"><div class="k">Language other than English</div><div class="v">${s.lbote[i] ?? "–"}<small>%</small></div>${benchLine(s, "lbote", i, (v) => Math.round(v) + "%")}</div>
@@ -415,7 +415,7 @@
         "Enrolments divided by teaching staff (FTE). Descriptive, not a quality measure."),
       chartCard("Teachers", "FTE", lineChart({ values: s.tfte, color: col, bench: bench("tfte"), fmtV: r1 })),
       chartCard("Non-teaching staff", "FTE", lineChart({ values: s.nfte, color: col, bench: bench("nfte"), fmtV: r1 })),
-      chartCard("ICSEA", "index", lineChart({ values: s.icsea, color: "#a8405f", bench: bench("icsea") }),
+      chartCard(ICSEA, "index", lineChart({ values: s.icsea, color: "#a8405f", bench: bench("icsea") }),
         "Index of Community Socio-Educational Advantage. The national average is 1000."),
       chartCard("Language other than English", "%", lineChart({ values: s.lbote, color: col, bench: bench("lbote") })),
       chartCard("Indigenous students", "%", lineChart({ values: s.ind, color: col, bench: bench("ind") })),
@@ -433,23 +433,258 @@
       <p class="note">My School's terms of use (clause 6.4) don't allow its content to be reposted on another public website without ACARA's written permission, so the results aren't copied into this map. School-level NAPLAN data can be requested through ACARA's <a href="https://www.acara.edu.au/contact-us/acara-data-access" target="_blank" rel="noopener">data access program</a>.</p>`;
   }
 
-  function renderDetail() {
-    const s = DATA.schools.find((x) => x.id === state.selected);
-    const el = $("detail");
-    if (!s) { el.hidden = true; return; }
-    const i = state.yearIdx, yr = YEARS[i];
-    const sec = sectorOf(s.sector), col = cssVar(sec.css);
-    const scroll = el.querySelector(".detail-body")?.scrollTop || 0;
+  /* ---------------- state school annual reports (Report tab) ---------------- */
+  // data/annual.json: {reportYear, schools: {id: {years, att, attYr, cls, sda, sos: {parent, student, staff}}}}.
+  // Only Government schools publish this template, so Catholic and Independent schools have no entry.
+  let ANNUAL = null;
+  const annualOf = (s) => (ANNUAL && ANNUAL.schools[s.id]) || null;
+  const SURVEY_LABELS = { parent: "Parents and caregivers", student: "Students", staff: "Staff" };
+  const pct = (v) => (v == null ? "–" : (Number.isInteger(v) ? v : v.toFixed(1)) + "%");
+  const last = (arr) => (arr ? arr[arr.length - 1] : null);
+  const reportUrl = (s) => `${s.url.replace(/\/$/, "")}/supportandresources/formsanddocuments/annualreports/annual-report-${ANNUAL.reportYear}.pdf`;
 
-    const body = {
-      overview: () => overviewTab(s, i, col),
-      students: () => studentsTab(s, i),
-      trends: () => trendsTab(s, col),
-      naplan: () => naplanTab(s),
-    }[state.tab]();
+  // SEQ median of the latest year across non-special state schools of the same type.
+  const ABENCH = {};
+  function annualMedian(type, key, get) {
+    const id = type + "|" + key;
+    if (!(id in ABENCH)) {
+      const v = DATA.schools
+        .filter((s) => s.type === type && !s.special && annualOf(s))
+        .map((s) => get(s, annualOf(s)))
+        .filter((x) => x != null)
+        .sort((a, b) => a - b);
+      ABENCH[id] = v.length < 5 ? null : quantile(v, 0.5);
+    }
+    return ABENCH[id];
+  }
+  const sosItem = (a, survey, q) => last(((a.sos || {})[survey] || []).find(([x]) => x === q)?.[1]);
+  const sdaPer100 = (s, a) => {
+    const e = s.enr[YEARS.indexOf(last(a.years))], t = last(a.sda?.total);
+    return e && t != null ? +((t / e) * 100).toFixed(1) : null;
+  };
 
-    el.innerHTML = `
-      <div class="detail-head">
+  function reportMissing(s) {
+    const why = s.sector === "Government"
+      ? `No ${ANNUAL ? ANNUAL.reportYear : ""} annual report was found on this school's website.`
+      : `${esc(s.sector)} schools publish their own annual reports in their own formats, so this data isn't collected for them.`;
+    return `<p class="small" style="margin-top:0">Attendance, class sizes, School Opinion Survey results and disciplinary absences come from Queensland state school annual reports.</p>
+      <p class="muted small">${why}</p>
+      ${s.url ? `<div class="links"><a href="${esc(/^https?:/i.test(s.url) ? s.url : "https://" + s.url)}" target="_blank" rel="noopener">School website <span>↗</span></a></div>` : ""}`;
+  }
+
+  function surveyCard(s, a, key) {
+    const items = (a.sos || {})[key];
+    if (!items || !items.length) return "";
+    const ys = a.years;
+    const body = items.map(([q, vals]) => {
+      const v = last(vals), med = s.special ? null : annualMedian(s.type, `sos|${key}|${q}`, (_, x) => sosItem(x, key, q));
+      return `<div class="sos-row">
+        <div class="sos-q">${esc(q)}</div>
+        <div class="sos-bar" title="${ys.map((y, k) => `${y}: ${pct(vals[k])}`).join(" · ")}${med != null ? ` · SEQ median ${pct(+med.toFixed(1))}` : ""}">
+          <span style="width:${v ?? 0}%"></span>${med != null ? `<b style="left:${med}%"></b>` : ""}
+        </div>
+        <div class="sos-v mono">${pct(v)}</div>
+        <div class="sos-prev mono muted">${ys.slice(0, -1).map((y, k) => `${y} ${pct(vals[k])}`).join(" · ")}</div>
+      </div>`;
+    }).join("");
+    return chartCard(SURVEY_LABELS[key], `% agree, ${last(ys)}`, body,
+      s.special ? "" : `Tick: median of SEQ state ${s.type.toLowerCase()} schools.`);
+  }
+
+  function yearTable(ys, rows, fmtV) {
+    return `<table class="cmp-table yr-table"><thead><tr><th></th>${ys.map((y) => `<th>${y}</th>`).join("")}</tr></thead>
+      <tbody>${rows.map(([label, vals]) => `<tr><th scope="row">${esc(label)}</th>${vals.map((v) => `<td>${fmtV(v)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+  }
+
+  function reportTab(s) {
+    if (!ANNUAL) return `<p class="muted small">Loading annual report data…</p>`;
+    const a = annualOf(s);
+    if (!a) return reportMissing(s);
+    const ys = a.years, yr = last(ys);
+    const med = (key, get, f) => {
+      const m = s.special ? null : annualMedian(s.type, key, get);
+      return m != null ? `<div class="cmp">SEQ state ${s.type.toLowerCase()} median ${f(m)}</div>` : "";
+    };
+    const sdaNames = { short: "Short suspensions", long: "Long suspensions", excl: "Exclusions", canc: "Cancellations", total: "Total" };
+    return `
+      <p class="muted small" style="margin:0 0 8px">From the school's <a href="${esc(reportUrl(s))}" target="_blank" rel="noopener">${ANNUAL.reportYear} annual report ↗</a> · ${ys[0]}–${yr}</p>
+      <div class="stats">
+        <div class="stat"><div class="k">Attendance ${yr}</div><div class="v">${pct(last(a.att))}</div>${med("att", (_, x) => last(x.att), (v) => pct(Math.round(v)))}</div>
+        <div class="stat"><div class="k">Disciplinary absences per 100 students</div><div class="v">${sdaPer100(s, a) ?? "–"}</div>${med("sda100", sdaPer100, (v) => v.toFixed(1))}</div>
+        ${(a.cls || []).map(([phase, vals]) => `<div class="stat"><div class="k">Average class size, ${esc(phase.replace(/Year /g, "Yr ").replace("Prep Yr", "Prep"))}</div><div class="v">${vals[2] ?? "–"}</div></div>`).join("")}
+      </div>
+      ${surveyCard(s, a, "parent")}
+      ${surveyCard(s, a, "student")}
+      ${surveyCard(s, a, "staff")}
+      ${a.attYr && a.attYr.length ? chartCard("Attendance by year level", "%", yearTable(ys, a.attYr, pct), "Days attended as a share of enrolled school days, full-time students.") : ""}
+      ${a.sda ? chartCard("School disciplinary absences", "count", yearTable(ys, Object.entries(sdaNames).filter(([k]) => a.sda[k]).map(([k, n]) => [n, a.sda[k]]), (v) => (v == null ? "–" : fmt(v))),
+        "Each suspension is counted, so one student can account for several. Per 100 students uses this year's enrolment.") : ""}
+      <p class="note">Source: State of Queensland (Department of Education), school annual reports, CC BY 4.0. The Department notes the reports are an information source only.</p>`;
+  }
+
+  function compareReport(list) {
+    if (!ANNUAL) return `<p class="muted small">Loading annual report data…</p>`;
+    const have = list.filter(annualOf), without = list.filter((s) => !annualOf(s));
+    const skipped = without.length
+      ? `<p class="muted small" style="margin:0 0 10px">Not compared: ${without.map((s) => `${esc(s.name)} (${s.sector === "Government" ? "no report found" : esc(s.sector) + " schools don't publish this report"})`).join("; ")}.</p>`
+      : "";
+    if (have.length < 2) {
+      return skipped + `<p class="small">Annual report data can only be compared between state schools. ${have.length ? `Open <strong>${esc(have[0].name)}</strong> on its own to see its report.` : ""}</p>`;
+    }
+    const v = (s, f) => f(annualOf(s));
+    const phases = [...new Set(have.flatMap((s) => (annualOf(s).cls || []).map(([p]) => p)))];
+    const rows = [
+      [`Attendance ${last(annualOf(have[0]).years)}`, (s) => v(s, (a) => pct(last(a.att)))],
+      ...phases.map((p) => [`Class size, ${esc(p.replace(/Year /g, "Yr "))}`, (s) => v(s, (a) => last((a.cls || []).find(([x]) => x === p)?.[1]) ?? "–")]),
+      ["Disciplinary absences", (s) => v(s, (a) => fmt(last(a.sda?.total)))],
+      ["… per 100 students", (s) => v(s, (a) => sdaPer100(s, a) ?? "–")],
+    ];
+    const surveys = Object.keys(SURVEY_LABELS).map((key) => {
+      const qs = [...new Set(have.flatMap((s) => ((annualOf(s).sos || {})[key] || []).map(([q]) => q)))];
+      if (!qs.length) return "";
+      return chartCard(SURVEY_LABELS[key], "% agree", cmpTable(have, qs.map((q) => [esc(q), (s) => pct(sosItem(annualOf(s), key, q))])));
+    }).join("");
+    return `${skipped}${cmpTable(have, rows)}${surveys}
+      <p class="note">Latest year from each school's ${ANNUAL.reportYear} annual report. Source: State of Queensland (Department of Education), CC BY 4.0.</p>`;
+  }
+
+  /* ---------------- comparison (2–4 schools side by side) ---------------- */
+  const inView = (id) => id === state.selected || state.compare.includes(id);
+  const compared = () => [state.selected, ...state.compare].map((id) => DATA.schools.find((x) => x.id === id)).filter(Boolean);
+  const shortName = (s) => s.name
+    .replace(/ State High School$/, " SHS").replace(/ State School$/, " SS")
+    .replace(/ State College$/, " SC").replace(/ Primary School$/, " PS");
+
+  // A metrics table with one column per school; each row is [label, school => html].
+  function cmpTable(list, rows) {
+    return `<table class="cmp-table">
+      <thead><tr><th></th>${list.map((s) => `<th title="${esc(s.name)}"><i style="background:${cmpColor(compared().indexOf(s))}"></i>${esc(shortName(s))}</th>`).join("")}</tr></thead>
+      <tbody>${rows.map(([label, f]) => `<tr><th scope="row">${label}</th>${list.map((s) => `<td>${f(s)}</td>`).join("")}</tr>`).join("")}</tbody>
+    </table>`;
+  }
+
+  function compareOverview(list, i) {
+    const r1 = (v) => (v == null ? "–" : (+v).toFixed(1));
+    return cmpTable(list, [
+      ["Sector", (s) => esc(s.sector)],
+      ["Type", (s) => esc(s.type) + (s.special ? " (special)" : "")],
+      ["Year levels", (s) => esc(s.yr || "–")],
+      ["Suburb", (s) => esc(s.suburb)],
+      ["Students", (s) => fmt(s.enr[i])],
+      [ICSEA, (s) => fmt(s.icsea[i])],
+      [`${ICSEA} percentile`, (s) => (s.pct[i] == null ? "–" : s.pct[i] + "th")],
+      ["Teachers (FTE)", (s) => r1(s.tfte[i])],
+      ["Students per teacher", (s) => r1(s.ratio[i])],
+      ["Non-teaching staff (FTE)", (s) => r1(s.nfte[i])],
+      ["My School", (s) => `<a href="https://www.myschool.edu.au/school/${s.id}" target="_blank" rel="noopener">Profile ↗</a>`],
+    ]);
+  }
+
+  function compareStudents(list, i) {
+    const rows = (partsOf) => list.map((s, k) => {
+      const parts = partsOf(s, i);
+      return `<div class="cmp-bar"><div class="cmp-name"><i style="background:${cmpColor(k)}"></i>${esc(s.name)}</div>
+        ${parts ? stackBar(parts, false) + `<div class="mono muted cmp-vals">${parts.map((p) => esc(p.label) + " " + (p.v ?? "–") + "%").join(" · ")}</div>`
+          : `<p class="muted small" style="margin:0">Not reported.</p>`}</div>`;
+    }).join("");
+    const legendOf = (partsOf) => {
+      const parts = list.map((s) => partsOf(s, i)).find(Boolean);
+      return parts ? stackLegend(parts, false) : "";
+    };
+    return `
+      ${chartCard("Girls and boys", "%", rows(genderParts) + legendOf(genderParts))}
+      ${chartCard("Socio-educational advantage", "quarters", rows(quarterParts) + legendOf(quarterParts), QUARTER_NOTE)}
+      ${cmpTable(list, [
+        ["Students", (s) => fmt(s.enr[i])],
+        ["Girls", (s) => fmt(s.girls[i])],
+        ["Boys", (s) => fmt(s.boys[i])],
+        ["Indigenous students", (s) => (s.ind[i] == null ? "–" : s.ind[i] + "%")],
+        ["Language other than English", (s) => (s.lbote[i] == null ? "–" : s.lbote[i] + "%")],
+      ])}`;
+  }
+
+  function compareTrends(list) {
+    // The SEQ median band only makes sense when every school is the same (non-special) type.
+    const type = list.every((s) => !s.special && s.type === list[0].type) ? list[0].type : null;
+    const bench = (key) => (type ? benchFor(type, key) : null);
+    const r1 = (v) => (+v).toFixed(Math.abs(v) < 100 ? 1 : 0).replace(/\.0$/, "");
+    const series = (key) => list.map((s, k) => ({ values: s[key], color: cmpColor(k), name: s.name }));
+    const legend = `<div class="legend">${list.map((s, k) => `<span><i style="background:${cmpColor(k)}"></i>${esc(shortName(s))}</span>`).join("")}</div>`;
+    const note = type ? `Dashed line: median of SEQ ${type.toLowerCase()} schools; shaded band: the middle half.` : "";
+    const card = (title, unit, key, fmtV, extra) =>
+      chartCard(title, unit, lineChart({ series: series(key), bench: bench(key), fmtV }) + legend, [extra, note].filter(Boolean).join(" "));
+    return [
+      card("Students", "enrolments", "enr"),
+      card("Students per teacher", "ratio", "ratio", r1, "Enrolments divided by teaching staff (FTE). Descriptive, not a quality measure."),
+      card("Teachers", "FTE", "tfte", r1),
+      card("Non-teaching staff", "FTE", "nfte", r1),
+      card(ICSEA, "index", "icsea", fmt, "Index of Community Socio-Educational Advantage. The national average is 1000."),
+      card("Language other than English", "%", "lbote"),
+      card("Indigenous students", "%", "ind"),
+    ].join("");
+  }
+
+  function compareNaplan(list) {
+    return `
+      <p class="small" style="margin-top:0">NAPLAN results and student progress are published on My School. Open each school's pages to compare them:</p>
+      ${list.map((s, k) => `<div class="cmp-name"><i style="background:${cmpColor(k)}"></i>${esc(s.name)}</div>
+        <div class="links" style="margin-bottom:12px">
+          <a href="https://www.myschool.edu.au/school/${s.id}/naplan/results" target="_blank" rel="noopener">NAPLAN results <span>↗</span></a>
+          <a href="https://www.myschool.edu.au/school/${s.id}/naplan" target="_blank" rel="noopener">Student progress <span>↗</span></a>
+        </div>`).join("")}
+      <p class="note">My School's terms of use don't allow its content to be reposted on another public website, so the results aren't copied into this map.</p>`;
+  }
+
+  function pickerHtml() {
+    return `<div class="picker">
+      <div class="picker-row">
+        <input id="cmp-search" type="search" placeholder="Search a school, or click one on the map" autocomplete="off" aria-label="Add a school to compare">
+        <button id="cmp-done" class="btn-ghost">Done</button>
+      </div>
+      <ul id="cmp-results" class="search-results" role="listbox" hidden></ul>
+    </div>`;
+  }
+
+  function setupPicker() {
+    const input = $("cmp-search"), list = $("cmp-results");
+    $("cmp-done").onclick = () => { state.picking = false; renderDetail(); };
+    let hits = [], active = 0;
+    const draw = () => {
+      list.hidden = !hits.length;
+      list.innerHTML = hits.map((s, k) => `<li role="option" data-id="${s.id}" class="${k === active ? "active" : ""}">
+        ${glyph(sectorOf(s.sector), 14)}<div><div>${esc(s.name)}</div><div class="sub">${esc(s.suburb)} ${esc(s.postcode)} · ${esc(s.type)}</div></div></li>`).join("");
+    };
+    input.addEventListener("input", () => {
+      active = 0;
+      hits = findSchools(input.value, 8).filter((s) => !inView(s.id));
+      draw();
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown") { active = Math.min(hits.length - 1, active + 1); draw(); e.preventDefault(); }
+      else if (e.key === "ArrowUp") { active = Math.max(0, active - 1); draw(); e.preventDefault(); }
+      else if (e.key === "Enter" && hits[active]) choose(hits[active].id);
+      else if (e.key === "Escape") { state.picking = false; renderDetail(); }
+    });
+    list.addEventListener("mousedown", (e) => {
+      const li = e.target.closest("li");
+      if (li) { e.preventDefault(); choose(+li.dataset.id); }
+    });
+    input.focus({ preventScroll: true });
+  }
+
+  function compareHead(list) {
+    return `
+        <div class="eyebrow">Comparing ${list.length} of up to ${MAX_COMPARE} schools</div>
+        <button class="icon-btn" id="detail-close" title="Close">&times;</button>
+        <ul class="cmp-list">${list.map((s, k) => `<li>
+          <i style="background:${cmpColor(k)}"></i>
+          <div><div class="cmp-title">${esc(s.name)}</div><div class="sub">${esc(s.sector)} · ${esc(s.type)} · ${esc(s.suburb)}</div></div>
+          <button class="icon-btn" data-remove="${s.id}" title="Remove from comparison">&times;</button></li>`).join("")}</ul>
+        ${state.picking ? pickerHtml() : list.length < MAX_COMPARE ? `<button class="btn-ghost" id="cmp-add">+ Add another school</button>` : ""}`;
+  }
+
+  function singleHead(s, col) {
+    return `
         <div class="eyebrow"><i style="background:${col}"></i>${esc(s.sector)} school</div>
         <h2>${esc(s.name)}</h2>
         <button class="icon-btn" id="detail-close" title="Close">&times;</button>
@@ -460,11 +695,33 @@
           <span class="tag">${esc(s.suburb)} ${esc(s.postcode)}</span>
           <span class="tag">${esc(s.lga)}</span>
         </div>
+        ${state.picking ? pickerHtml() : `<button class="btn-ghost" id="cmp-add">+ Compare with other schools</button>`}`;
+  }
+
+  function renderDetail() {
+    const s = DATA.schools.find((x) => x.id === state.selected);
+    const el = $("detail");
+    if (!s) { el.hidden = true; return; }
+    const i = state.yearIdx, yr = YEARS[i];
+    const sec = sectorOf(s.sector), col = cssVar(sec.css);
+    const scroll = el.querySelector(".detail-body")?.scrollTop || 0;
+    const list = compared(), many = list.length > 1;
+
+    const body = many
+      ? { overview: () => compareOverview(list, i), students: () => compareStudents(list, i), trends: () => compareTrends(list), report: () => compareReport(list), naplan: () => compareNaplan(list) }[state.tab]()
+      : { overview: () => overviewTab(s, i, col), students: () => studentsTab(s, i), trends: () => trendsTab(s, col), report: () => reportTab(s), naplan: () => naplanTab(s) }[state.tab]();
+    const missing = list.filter((x) => x.enr[i] == null).length;
+    const missingNote = !missing ? "" : many ? ` · ${missing === 1 ? "one school" : missing + " schools"} didn't report this year` : " · no data reported this year";
+
+    el.classList.toggle("comparing", many);
+    el.innerHTML = `
+      <div class="detail-head">
+        ${many ? compareHead(list) : singleHead(s, col)}
         <nav class="tabs" role="tablist">${TABS.map(([k, label]) =>
           `<button role="tab" data-tab="${k}" class="${state.tab === k ? "on" : ""}" aria-selected="${state.tab === k}">${label}</button>`).join("")}</nav>
       </div>
       <div class="detail-body">
-        ${state.tab !== "naplan" ? `<p class="muted small" style="margin:0 0 8px"><span class="mono">${yr}</span>${s.enr[i] == null ? " · no data reported this year" : ""}</p>` : ""}
+        ${!["naplan", "report"].includes(state.tab) ? `<p class="muted small" style="margin:0 0 8px"><span class="mono">${yr}</span>${missingNote}</p>` : ""}
         ${body}
       </div>`;
     el.hidden = false;
@@ -476,8 +733,37 @@
       renderDetail();
       el.querySelector(".detail-body").scrollTop = 0;
     }));
+    el.querySelectorAll("[data-remove]").forEach((b) => (b.onclick = () => removeCompared(+b.dataset.remove)));
+    const add = $("cmp-add");
+    if (add) add.onclick = () => { state.picking = true; renderDetail(); };
+    if (state.picking) setupPicker();
     const sc = $("show-catchment");
     if (sc) sc.onclick = (e) => { e.preventDefault(); showCatchmentOf(s); };
+  }
+
+  // Map clicks and search picks land here: while picking they join the comparison, otherwise they select.
+  function choose(id, fly = true) {
+    if (!state.picking || state.selected == null) return select(id, fly);
+    if (!inView(id)) state.compare.push(id);
+    if (state.compare.length >= MAX_COMPARE - 1) state.picking = false;
+    writeHash();
+    render();
+    restyleCatchments();
+    fitCompared();
+  }
+
+  function removeCompared(id) {
+    if (id === state.selected) state.selected = state.compare.shift() ?? null;
+    else state.compare = state.compare.filter((x) => x !== id);
+    if (state.selected == null) return select(null);
+    writeHash();
+    render();
+    restyleCatchments();
+  }
+
+  function fitCompared() {
+    const pts = compared().map((s) => [s.lat, s.lng]);
+    if (pts.length > 1) map.flyToBounds(pts, { padding: [60, 60], maxZoom: 15, duration: 0.8 });
   }
 
   /* ---------------- catchments ---------------- */
@@ -486,7 +772,7 @@
 
   function catchStyle(f) {
     const dark = isDark();
-    const sel = f.properties.id === state.selected;
+    const sel = inView(f.properties.id);
     const gov = cssVar("--gov");
     return sel
       ? { color: gov, weight: 3, opacity: 1, fillColor: gov, fillOpacity: 0.14 }
@@ -545,6 +831,8 @@
 
   function select(id, fly = true) {
     state.selected = id;
+    state.compare = [];
+    state.picking = false;
     writeHash();
     render();
     restyleCatchments();
@@ -554,6 +842,18 @@
   }
 
   /* ---------------- search ---------------- */
+  function findSchools(q, limit = 10) {
+    q = q.trim().toLowerCase();
+    if (q.length < 2) return [];
+    const starts = [], has = [];
+    for (const s of DATA.schools) {
+      const n = s.name.toLowerCase();
+      if (n.startsWith(q)) starts.push(s);
+      else if (n.includes(q) || s.suburb.toLowerCase().includes(q) || s.postcode.startsWith(q)) has.push(s);
+    }
+    return starts.concat(has).slice(0, limit);
+  }
+
   function setupSearch() {
     const input = $("search"), list = $("search-results");
     let hits = [], active = 0;
@@ -569,16 +869,9 @@
     };
 
     input.addEventListener("input", () => {
-      const q = input.value.trim().toLowerCase();
       active = 0;
-      if (q.length < 2) { hits = []; return draw(); }
-      const starts = [], has = [];
-      for (const s of DATA.schools) {
-        const n = s.name.toLowerCase();
-        if (n.startsWith(q)) starts.push(s);
-        else if (n.includes(q) || s.suburb.toLowerCase().includes(q) || s.postcode.startsWith(q)) has.push(s);
-      }
-      hits = starts.concat(has).slice(0, 10);
+      const q = input.value;
+      hits = findSchools(q);
       draw();
     });
     input.addEventListener("keydown", (e) => {
@@ -603,11 +896,11 @@
       if (s.special) { state.special = true; $("opt-special").checked = true; }
       if (!reporting(s)) { state.inactive = true; $("opt-inactive").checked = true; }
       syncPills();
-      input.value = s.name;
+      input.value = state.picking ? "" : s.name;
       hits = [];
       draw();
       input.blur();
-      select(id);
+      choose(id);
     }
 
     document.addEventListener("keydown", (e) => {
@@ -619,6 +912,7 @@
   function writeHash() {
     const p = new URLSearchParams();
     if (state.selected != null) p.set("s", state.selected);
+    if (state.compare.length) p.set("cmp", state.compare.join(","));
     if (state.yearIdx !== YEARS.length - 1) p.set("y", YEARS[state.yearIdx]);
     if (state.catch) p.set("c", state.catch);
     if (state.selected != null && state.tab !== "overview") p.set("t", state.tab);
@@ -630,7 +924,12 @@
     const y = YEARS.indexOf(+p.get("y"));
     if (y >= 0) state.yearIdx = y;
     const id = +p.get("s");
-    if (id && DATA.schools.some((s) => s.id === id)) state.selected = id;
+    if (id && DATA.schools.some((s) => s.id === id)) {
+      state.selected = id;
+      state.compare = [...new Set((p.get("cmp") || "").split(",").map(Number))]
+        .filter((c) => c && c !== id && DATA.schools.some((s) => s.id === c))
+        .slice(0, MAX_COMPARE - 1);
+    }
     if (["primary", "junior", "senior"].includes(p.get("c"))) state.catch = p.get("c");
     if (TABS.some(([k]) => k === p.get("t"))) state.tab = p.get("t");
   }
@@ -644,8 +943,6 @@
     document.addEventListener("click", (e) => {
       const chip = e.target.closest(".chip[data-sector]");
       if (chip) toggleSector(chip.dataset.sector);
-      const bar = e.target.closest(".bar");
-      if (bar) setYear(+bar.dataset.i);
     });
     $("sector-toggles").addEventListener("change", (e) => {
       if (e.target.dataset.sector) toggleSector(e.target.dataset.sector);
@@ -692,10 +989,13 @@
     if (innerWidth <= 640) $("panel-close").click();
 
     $("play").onclick = togglePlay;
+    $("year-range").max = YEARS.length - 1;
+    $("year-range").addEventListener("input", (e) => setYear(+e.target.value));
     document.addEventListener("keydown", (e) => {
       if (e.target.matches("input, select, textarea")) return;
       if (e.key === "ArrowLeft") setYear(state.yearIdx - 1);
       else if (e.key === "ArrowRight") setYear(state.yearIdx + 1);
+      else if (e.key === "Escape" && state.picking) { state.picking = false; renderDetail(); }
       else if (e.key === "Escape" && state.selected != null) select(null);
     });
 
@@ -703,14 +1003,21 @@
     matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
       if (!document.documentElement.dataset.theme) { setTiles(); render(); restyleCatchments(); }
     });
-
-    $("bar-legend").innerHTML = SECTORS.map((s) => `<span><i style="background:var(${s.css})"></i>${s.key}</span>`).join("");
   }
 
   /* ---------------- boot ---------------- */
   let savedTheme = "auto";
   try { savedTheme = localStorage.getItem("theme") || "auto"; } catch (e) {}
   applyTheme(savedTheme);
+
+  // Annual report data is optional extra detail; the map works without it.
+  fetch("data/annual.json")
+    .then((r) => (r.ok ? r.json() : null))
+    .then((d) => {
+      ANNUAL = d || { reportYear: null, schools: {} };
+      if (DATA && state.selected != null) renderDetail();
+    })
+    .catch(() => { ANNUAL = { reportYear: null, schools: {} }; });
 
   fetch("data/schools.json")
     .then((r) => r.json())
@@ -739,7 +1046,9 @@
 
       if (state.selected != null) {
         const s = DATA.schools.find((x) => x.id === state.selected);
-        map.setView([s.lat, s.lng], 15);
+        const pts = compared().map((x) => [x.lat, x.lng]);
+        if (pts.length > 1) map.fitBounds(pts, { padding: [60, 60], maxZoom: 15 });
+        else map.setView([s.lat, s.lng], 15);
       }
     })
     .catch((err) => {
