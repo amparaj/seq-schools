@@ -34,7 +34,7 @@
     compare: [], // further school ids shown alongside `selected`
     picking: false, // while true, map clicks and search add to the comparison
     tab: "overview",
-    catchMode: "auto", // "auto", "off", "primary", "junior" or "senior"
+    catchMode: "", // level drawn when no school is selected: "", "primary", "junior" or "senior"
     catch: "", // the catchment layer on the map now ("" for none)
   };
 
@@ -739,7 +739,7 @@
     if (add) add.onclick = () => { state.picking = true; renderDetail(); };
     if (state.picking) setupPicker();
     const sc = $("show-catchment");
-    if (sc) sc.onclick = (e) => { e.preventDefault(); showCatchmentOf(s); };
+    if (sc) sc.onclick = (e) => { e.preventDefault(); fitCatchment(s); };
   }
 
   // Map clicks and search picks land here: while picking they join the comparison, otherwise they select.
@@ -768,23 +768,25 @@
   }
 
   /* ---------------- catchments ---------------- */
-  // state.catchMode is "auto" (default), "off" or a level. Auto shows the selected state school's
-  // own catchment; a level always shows that layer. Either way, the catchments containing the
-  // selected schools are highlighted, so a primary school can be checked against senior catchments.
+  // With no school selected, state.catchMode picks one level to draw over the whole region ("" for none).
+  // With a school selected the control is hidden and the map shows that school's own catchment plus the
+  // state school (primary) and state high school (junior) catchments around it; state.catchMode is kept
+  // and comes back on deselect.
   const CATCH_LEVELS = ["primary", "junior", "senior"];
   const CATCH_NAMES = { primary: "primary", junior: "junior secondary", senior: "senior secondary" };
+  const NEAR_METRES = 5000; // how far around a selected school to draw neighbouring catchments
   const catchCache = {}, catchData = {};
-  let catchLayer = null, catchRenderer = null, catchHits = new Set(), catchToken = 0;
+  let catchLayer = null, catchRenderer = null, catchOwn = new Set(), catchHits = new Set(), catchToken = 0;
 
   function loadCatch(key) {
     catchCache[key] = catchCache[key] || fetch(`data/catchments-${key}.geojson`)
       .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
-      .then((d) => (catchData[key] = d))
+      .then((d) => { d.features.forEach((f) => (f._lvl = key)); return (catchData[key] = d); })
       .catch((err) => { delete catchCache[key]; throw err; });
     return catchCache[key];
   }
-  const hasCatchment = (key, id) => !!catchData[key] && catchData[key].features.some((f) => f.properties.id === id);
-  const catchOrder = (s) => [...new Set([CATCH_FOR_TYPE[s.type] || "primary", ...CATCH_LEVELS])];
+  const ownFeatures = (key, id) => (catchData[key] ? catchData[key].features.filter((f) => f.properties.id === id) : []);
+  const bbox = (f) => (f._bb = f._bb || L.geoJSON(f).getBounds());
   const schoolById = (id) => DATA.schools.find((x) => x.id === id);
 
   // Even-odd ray cast over every ring, so holes are respected. pt is [lng, lat].
@@ -802,57 +804,65 @@
     });
   }
   function containing(key, s) {
-    return catchData[key].features.filter((f) => {
-      const b = (f._bb = f._bb || L.geoJSON(f).getBounds());
-      return b.contains([s.lat, s.lng]) && inGeometry([s.lng, s.lat], f.geometry);
-    });
+    return catchData[key].features.filter((f) => bbox(f).contains([s.lat, s.lng]) && inGeometry([s.lng, s.lat], f.geometry));
   }
 
-  // The layer Auto shows: the selected state school's own catchment, at its own level first.
-  async function autoKey() {
-    const s = schoolById(state.selected);
-    if (!s || s.sector !== "Government" || s.special) return "";
-    for (const k of catchOrder(s)) {
-      await loadCatch(k);
-      if (hasCatchment(k, s.id)) return k;
-    }
-    return "";
+  // Levels drawn around selected schools, bottom first: high school under state school, plus senior
+  // when a selected school's only catchment is a senior one.
+  async function nearLevels(schools) {
+    await Promise.all(["primary", "junior"].map(loadCatch));
+    const seniorOnly = schools.some((s) => s.sector === "Government" && !s.special &&
+      !ownFeatures("primary", s.id).length && !ownFeatures("junior", s.id).length);
+    if (!seniorOnly) return ["junior", "primary"];
+    await loadCatch("senior");
+    return schools.some((s) => ownFeatures("senior", s.id).length) ? ["senior", "junior", "primary"] : ["junior", "primary"];
+  }
+  function nearFeatures(levels, schools) {
+    const area = L.latLngBounds([]);
+    schools.forEach((s) => {
+      area.extend(L.latLng(s.lat, s.lng).toBounds(NEAR_METRES));
+      levels.forEach((k) => ownFeatures(k, s.id).forEach((f) => area.extend(bbox(f))));
+    });
+    return levels.flatMap((k) => catchData[k].features.filter((f) => area.intersects(bbox(f))));
   }
 
   function catchStyle(f) {
     const dark = isDark();
-    const gov = cssVar("--gov");
-    return catchHits.has(f)
-      ? { color: gov, weight: 3, opacity: 1, fillColor: gov, fillOpacity: 0.14 }
-      : { color: dark ? "#e3cfd4" : "#6b1a33", weight: 1, opacity: dark ? 0.55 : 0.6, fillColor: dark ? "#e3cfd4" : "#6b1a33", fillOpacity: 0.03 };
+    const gov = cssVar("--gov"), line = dark ? "#e3cfd4" : "#6b1a33";
+    const dash = f._lvl === "primary" ? null : "6 4";
+    if (catchOwn.has(f)) return { color: gov, weight: 3, opacity: 1, dashArray: dash, fillColor: gov, fillOpacity: 0.16 };
+    if (catchHits.has(f)) return { color: gov, weight: 2, opacity: 0.9, dashArray: dash, fillColor: gov, fillOpacity: 0.05 };
+    return { color: line, weight: 1, opacity: dark ? 0.55 : 0.6, dashArray: dash, fillColor: line, fillOpacity: 0.03 };
   }
 
   // Bring the map, the control and the note in line with state.catchMode and the selection.
   async function syncCatchments() {
     const token = ++catchToken, mode = state.catchMode;
+    const schools = state.selected == null ? [] : compared();
+    const near = schools.length > 0;
+    $("catch-by").hidden = near;
     document.querySelectorAll("#catch-by button").forEach((b) => b.classList.toggle("on", b.dataset.v === mode));
-    let key = CATCH_LEVELS.includes(mode) ? mode : "";
+    let levels = mode ? [mode] : [];
     try {
-      if (mode === "auto") key = await autoKey();
-      if (key) {
-        if (!catchData[key]) $("catch-status").textContent = "loading…";
-        await loadCatch(key);
-      }
+      if (near || levels.some((k) => !catchData[k])) $("catch-status").textContent = "loading…";
+      levels = near ? await nearLevels(schools) : levels;
+      await Promise.all(levels.map(loadCatch));
     } catch (err) {
       if (token === catchToken) $("catch-status").textContent = "failed to load";
       return;
     }
     if (token !== catchToken) return; // changed again while loading
 
-    if (key !== state.catch || (key && !catchLayer)) {
+    const sig = near ? "near:" + schools.map((s) => s.id).join(",") : levels.join(",");
+    if (sig !== state.catch || (sig && !catchLayer)) {
       if (catchLayer) { map.removeLayer(catchLayer); catchLayer = null; }
-      if (key) {
+      if (sig) {
         catchRenderer = catchRenderer || L.canvas({ padding: 0.5 });
-        catchLayer = L.geoJSON(catchData[key], {
+        catchLayer = L.geoJSON(near ? nearFeatures(levels, schools) : catchData[levels[0]], {
           renderer: catchRenderer,
           style: catchStyle,
           onEachFeature: (f, layer) => {
-            layer.bindTooltip(`<strong>${esc(f.properties.name)}</strong><br><span class="muted">${CATCH_NAMES[key]} catchment · click to open</span>`, { sticky: true });
+            layer.bindTooltip(`<strong>${esc(f.properties.name)}</strong><br><span class="muted">${CATCH_NAMES[f._lvl]} catchment · click to open</span>`, { sticky: true });
             layer.on("mouseover", () => layer.setStyle({ weight: 2.5, fillOpacity: 0.1 }));
             layer.on("mouseout", () => catchLayer && catchLayer.resetStyle(layer));
             layer.on("click", () => f.properties.id && choose(f.properties.id, false));
@@ -861,33 +871,31 @@
         catchLayer.bringToBack();
       }
     }
-    state.catch = key;
+    state.catch = sig;
 
-    const inViewSchools = state.selected == null ? [] : compared();
-    catchHits = new Set(key ? inViewSchools.flatMap((s) => [
-      ...catchData[key].features.filter((f) => f.properties.id === s.id),
-      ...containing(key, s),
-    ]) : []);
+    catchOwn = new Set(schools.flatMap((s) => levels.flatMap((k) => ownFeatures(k, s.id))));
+    catchHits = new Set(schools.flatMap((s) => levels.flatMap((k) => containing(k, s))));
     restyleCatchments();
-    $("catch-status").textContent = mode === "auto" ? "auto" : mode === "off" ? "off" : "on";
-    $("catch-note").innerHTML = catchNote(key);
+    $("catch-status").textContent = near ? "selected" : mode ? "on" : "off";
+    $("catch-note").innerHTML = catchNote(levels, schools);
   }
 
-  function catchNote(key) {
-    const s = schoolById(state.selected);
-    if (!s) return state.catchMode === "auto" ? "Select a state school to see its catchment." : "";
-    if (!key) {
-      if (state.catchMode !== "auto") return "";
-      return s.sector === "Government"
-        ? `${esc(s.name)} doesn't have its own catchment. Pick a level to see which catchments it's in.`
-        : `${esc(s.sector)} schools don't have catchments. Pick a level to see which state school catchments it's in.`;
-    }
-    const level = CATCH_NAMES[key];
-    if (hasCatchment(key, s.id)) return `Showing <strong>${esc(s.name)}</strong>'s ${level} catchment.`;
-    const names = containing(key, s).map((f) => `<strong>${esc(f.properties.name)}</strong>`);
-    return names.length
-      ? `${esc(s.name)} is inside the ${names.join(" and ")} ${level} catchment.`
-      : `${esc(s.name)} isn't inside any ${level} catchment.`;
+  function catchNote(levels, schools) {
+    if (!schools.length) return "";
+    const legend = `<br><span class="muted">Solid outlines: state school catchments. Dashed: state high school catchments.</span>`;
+    if (schools.length > 1) return `Showing the catchments of and around the ${schools.length} compared schools.${legend}`;
+    const s = schools[0];
+    const own = levels.filter((k) => ownFeatures(k, s.id).length).reverse();
+    const lead = own.length
+      ? `Showing <strong>${esc(s.name)}</strong>'s ${own.map((k) => CATCH_NAMES[k]).join(" and ")} catchment.`
+      : s.sector === "Government"
+        ? `${esc(s.name)} doesn't have its own catchment.`
+        : `${esc(s.sector)} schools don't have catchments.`;
+    const inside = levels.filter((k) => !own.includes(k)).reverse().map((k) => {
+      const names = containing(k, s).map((f) => `<strong>${esc(f.properties.name)}</strong>`);
+      return names.length ? `the ${names.join(" and ")} ${CATCH_NAMES[k]}` : "";
+    }).filter(Boolean);
+    return lead + (inside.length ? ` It's inside ${inside.join(" and ")} catchment${inside.length > 1 ? "s" : ""}.` : "") + legend;
   }
 
   function setCatchMode(mode) {
@@ -900,20 +908,11 @@
     if (catchLayer) catchLayer.setStyle(catchStyle);
   }
 
-  // "Show catchment on map": switch to a level where the school has its own catchment, then fit it.
-  async function showCatchmentOf(s) {
-    for (const k of [state.catch, ...catchOrder(s)].filter(Boolean)) {
-      await loadCatch(k);
-      if (!hasCatchment(k, s.id)) continue;
-      if (k !== state.catch) await setCatchMode(k);
-      fitCatchment(s);
-      return;
-    }
-  }
+  // Frame the school's own catchment(s) on the map; false when none is drawn.
   function fitCatchment(s) {
-    const own = catchLayer && catchLayer.getLayers().find((l) => l.feature.properties.id === s.id);
-    if (own) map.flyToBounds(own.getBounds(), { padding: [40, 40], duration: 0.8 });
-    return !!own;
+    const own = catchLayer ? catchLayer.getLayers().filter((l) => l.feature.properties.id === s.id) : [];
+    if (own.length) map.flyToBounds(L.featureGroup(own).getBounds(), { padding: [40, 40], duration: 0.8 });
+    return own.length > 0;
   }
 
   function select(id, fly = true) {
@@ -926,7 +925,7 @@
     if (id == null) { $("detail").hidden = true; return; }
     const s = schoolById(id);
     if (!s || !fly) return;
-    // From search: frame the school's catchment when Auto shows one, otherwise zoom to the school.
+    // From search: frame the school's own catchment when it has one, otherwise zoom to the school.
     synced.then(() => fitCatchment(s) || map.flyTo([s.lat, s.lng], Math.max(map.getZoom(), 15), { duration: 0.8 }));
   }
 
@@ -1003,7 +1002,7 @@
     if (state.selected != null) p.set("s", state.selected);
     if (state.compare.length) p.set("cmp", state.compare.join(","));
     if (state.yearIdx !== YEARS.length - 1) p.set("y", YEARS[state.yearIdx]);
-    if (state.catchMode !== "auto") p.set("c", state.catchMode);
+    if (state.catchMode) p.set("c", state.catchMode);
     if (state.selected != null && state.tab !== "overview") p.set("t", state.tab);
     const h = p.toString();
     history.replaceState(null, "", h ? "#" + h : location.pathname + location.search);
@@ -1019,7 +1018,7 @@
         .filter((c) => c && c !== id && DATA.schools.some((s) => s.id === c))
         .slice(0, MAX_COMPARE - 1);
     }
-    if (["off", "primary", "junior", "senior"].includes(p.get("c"))) state.catchMode = p.get("c");
+    if (CATCH_LEVELS.includes(p.get("c"))) state.catchMode = p.get("c");
     if (TABS.some(([k]) => k === p.get("t"))) state.tab = p.get("t");
   }
 
@@ -1065,7 +1064,7 @@
 
     $("catch-by").addEventListener("click", (e) => {
       const b = e.target.closest("button");
-      if (b) setCatchMode(b.dataset.v);
+      if (b) setCatchMode(b.dataset.v === state.catchMode ? "" : b.dataset.v); // click again to hide
     });
 
     $("opt-special").addEventListener("change", (e) => { state.special = e.target.checked; render(); });

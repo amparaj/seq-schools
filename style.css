@@ -226,6 +226,7 @@ abbr[title] { text-decoration: underline dotted; text-underline-offset: 2px; cur
 }
 .seg button:hover { color: var(--fg); }
 .seg button.on { background: var(--bg); color: var(--accent); font-weight: 600; box-shadow: 0 1px 3px rgba(0, 0, 0, .12); }
+.seg[hidden] { display: none; }
 
 .pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
 .pills button {
