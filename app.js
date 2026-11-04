@@ -851,11 +851,10 @@
   function renderDetail() {
     const s = DATA.schools.find((x) => x.id === state.selected);
     const el = $("detail");
-    if (!s) { el.hidden = true; return; }
+    if (!s) { el.hidden = true; el.style.removeProperty("--sheet-top"); return; } // phone sheet reopens at half
     const i = state.yearIdx, yr = YEARS[i];
     const sec = sectorOf(s.sector), col = cssVar(sec.css);
-    // Desktop scrolls .detail-body; on mobile the whole panel scrolls. Keep both positions.
-    const scroll = el.querySelector(".detail-body")?.scrollTop || 0, outer = el.scrollTop;
+    const scroll = el.querySelector(".detail-body")?.scrollTop || 0;
     const list = compared(), many = list.length > 1;
 
     const body = many
@@ -867,6 +866,7 @@
     el.classList.toggle("comparing", many);
     el.innerHTML = `
       <div class="detail-head">
+        <div class="sheet-grip" aria-hidden="true"></div>
         ${many ? compareHead(list) : singleHead(s, col)}
       </div>
       <div class="tab-bar">
@@ -879,15 +879,12 @@
       </div>`;
     el.hidden = false;
     el.querySelector(".detail-body").scrollTop = scroll;
-    el.scrollTop = outer;
     $("detail-close").onclick = () => select(null);
     el.querySelectorAll("[data-tab]").forEach((b) => (b.onclick = () => {
       state.tab = b.dataset.tab;
       writeHash();
       renderDetail();
       el.querySelector(".detail-body").scrollTop = 0;
-      // On mobile, start the new tab just under the pinned tab bar.
-      el.scrollTop = Math.min(el.scrollTop, el.querySelector(".detail-head").offsetHeight);
     }));
     el.querySelectorAll("[data-remove]").forEach((b) => (b.onclick = () => removeCompared(+b.dataset.remove)));
     const add = $("cmp-add");
@@ -1145,6 +1142,66 @@
     document.querySelectorAll("#type-filter button").forEach((b) => b.classList.toggle("on", state.types.has(b.dataset.v)));
   }
 
+  /* ---------------- phone bottom sheet ---------------- */
+  // On phones the detail is a sheet (style.css): drag the head, or the content from the top of
+  // its scroll, between half and full height; drag or flick down past half to close.
+  // --sheet-top unset means half; "0px" means full.
+  const PHONE = matchMedia("(max-width: 640px)");
+  function setupSheet() {
+    const el = $("detail");
+    let drag = null;
+    const halfTop = () => el.parentElement.clientHeight * 0.3 - 10;
+    const snap = (top) => {
+      el.classList.add("snapping");
+      if (top == null) el.style.removeProperty("--sheet-top");
+      else el.style.setProperty("--sheet-top", top + "px");
+      setTimeout(() => el.classList.remove("snapping"), 300);
+    };
+    const close = () => {
+      snap(el.parentElement.clientHeight);
+      setTimeout(() => select(null), 260);
+    };
+
+    el.addEventListener("touchstart", (e) => {
+      if (!PHONE.matches || e.touches.length > 1 || e.target.closest(".search-results")) return (drag = null);
+      const t = e.touches[0];
+      drag = { x0: t.clientX, y0: t.clientY, top0: el.offsetTop, body: e.target.closest(".detail-body"), on: null, track: [] };
+    }, { passive: true });
+
+    el.addEventListener("touchmove", (e) => {
+      if (!drag) return;
+      const t = e.touches[0], dx = t.clientX - drag.x0, dy = t.clientY - drag.y0;
+      if (drag.on == null) {
+        if (!dx && !dy) return;
+        // In the content, move the sheet only where scrolling can't: pulling down from the top,
+        // or pushing up while half open (the first swipe up expands the sheet, later ones scroll).
+        drag.on = Math.abs(dy) > Math.abs(dx) &&
+          (!drag.body || (dy > 0 && drag.body.scrollTop <= 0) || (dy < 0 && drag.top0 > 1));
+        if (!drag.on) return (drag = null);
+      }
+      e.preventDefault();
+      const top = Math.max(0, drag.top0 + dy);
+      el.style.setProperty("--sheet-top", top + "px");
+      drag.track.push([e.timeStamp, top]);
+      if (drag.track.length > 5) drag.track.shift();
+    }, { passive: false });
+
+    const end = () => {
+      const d = drag;
+      drag = null;
+      if (!d || !d.on || !d.track.length) return;
+      const [t0, y0] = d.track[0], [t1, top] = d.track[d.track.length - 1];
+      const v = (top - y0) / Math.max(1, t1 - t0), half = halfTop(); // px/ms, positive = down
+      const fromFull = d.top0 < half / 2;
+      if (v > 0.5) return fromFull ? snap(null) : close();
+      if (v < -0.5) return snap(0);
+      if (top > half + 100) return close();
+      snap(top < half / 2 ? 0 : null);
+    };
+    el.addEventListener("touchend", end);
+    el.addEventListener("touchcancel", end);
+  }
+
   function setupControls() {
     document.addEventListener("click", (e) => {
       const chip = e.target.closest(".chip[data-sector]");
@@ -1263,6 +1320,7 @@
       rebuildGroups();
       setupControls();
       setupSearch();
+      setupSheet();
       render();
       syncCatchments();
 

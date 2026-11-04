@@ -297,6 +297,7 @@ abbr[title] { text-decoration: underline dotted; text-underline-offset: 2px; cur
 .cards > .card { margin: 0; }
 @container (min-width: 600px) { .cards { grid-template-columns: 1fr 1fr; } }
 .detail-head { padding: 18px 18px 0; position: relative; background: var(--bg-soft); }
+.sheet-grip { display: none; }
 .tab-bar { padding: 0 18px 12px; background: var(--bg-soft); border-bottom: 1px solid var(--line); }
 .detail-head h2 { font-size: 20px; font-weight: 800; margin: 0 28px 6px 0; line-height: 1.2; letter-spacing: -.015em; }
 .detail-head .icon-btn { position: absolute; top: 14px; right: 12px; }
@@ -466,25 +467,27 @@ abbr[title] { text-decoration: underline dotted; text-underline-offset: 2px; cur
   }
   .panel { top: 8px; max-height: 60%; }
   .year-step { display: flex; }
-  /* With a school open, the map shrinks to a strip on top and the detail docks below it,
-     so the selected school stays visible instead of hiding under a floating sheet. */
-  .stage:has(> .detail:not([hidden])) {
-    display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 30% minmax(0, 1fr);
-  }
-  .stage:has(> .detail:not([hidden])) #map { position: relative; inset: auto; grid-column: 1; grid-row: 1; }
-  .stage:has(> .detail:not([hidden])) .panel { max-height: calc(100% - 16px); }
+  /* With a school open, the detail is a bottom sheet: dragged by its head between half
+     (map strip on top) and full, or down to close (app.js setupSheet). The map shrinks to
+     the strip so the selected school stays centred in what's visible. */
+  .stage:has(> .detail:not([hidden])) #map { bottom: 70%; }
   .stage .detail, .stage .detail.comparing {
-    position: relative; grid-column: 1; grid-row: 2; left: auto; right: auto;
+    left: 0; right: 0; bottom: 0; top: var(--sheet-top, calc(30% - 10px)); max-height: none;
     border: 0; border-top: 1px solid var(--line); border-radius: 14px 14px 0 0;
-    box-shadow: 0 -4px 16px rgb(0 0 0 / .12); margin-top: -10px; z-index: 1000;
+    box-shadow: 0 -4px 16px rgb(0 0 0 / .12); z-index: 1000;
   }
-  .stage .detail { display: block; overflow: auto; overscroll-behavior: contain; }
-  .stage .detail-body { overflow: visible; }
-  .tab-bar { position: sticky; top: 0; z-index: 2; padding: 0 10px 8px; }
+  .detail.snapping { transition: top .25s ease-out; }
+  .detail-body { overscroll-behavior: contain; }
+  .sheet-grip { display: block; height: 18px; margin: -10px -14px 0; touch-action: none; cursor: grab; }
+  .sheet-grip::before { content: ""; display: block; width: 40px; height: 5px; margin: 7px auto 0; border-radius: 3px; background: var(--fg-muted); opacity: .45; }
+  .detail-head { touch-action: none; }
+  .detail-head .search-results { touch-action: pan-y; }
+  .tab-bar { touch-action: pan-x; padding: 0 10px 8px; }
   .tab-bar .tabs { overflow-x: auto; scrollbar-width: none; }
   .tabs button { flex-shrink: 0; }
-  .detail-head { border-radius: 14px 14px 0 0; padding: 14px 14px 0; }
+  .detail-head { border-radius: 14px 14px 0 0; padding: 10px 14px 0; }
   .detail-head h2 { font-size: 18px; }
+  .detail-head #detail-close { display: none; }
   .detail-head .icon-btn { top: 10px; right: 8px; }
   .detail-body { padding: 12px 14px 16px; }
   .topbar { gap: 10px; padding: 8px 16px; flex-wrap: wrap; }
