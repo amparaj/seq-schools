@@ -851,7 +851,7 @@
   function renderDetail() {
     const s = DATA.schools.find((x) => x.id === state.selected);
     const el = $("detail");
-    if (!s) { el.hidden = true; el.style.removeProperty("--sheet-top"); return; } // phone sheet reopens at half
+    if (!s) { closeDetail(); return; }
     const i = state.yearIdx, yr = YEARS[i];
     const sec = sectorOf(s.sector), col = cssVar(sec.css);
     const scroll = el.querySelector(".detail-body")?.scrollTop || 0;
@@ -1030,6 +1030,14 @@
     }
   }
 
+  // Every close goes through here so the phone sheet's drag position is cleared and it reopens at half.
+  function closeDetail() {
+    const el = $("detail");
+    el.hidden = true;
+    el.classList.remove("snapping");
+    el.style.removeProperty("--sheet-top");
+  }
+
   function select(id, fly = true) {
     state.selected = id;
     state.compare = [];
@@ -1037,7 +1045,7 @@
     writeHash();
     render();
     const synced = syncCatchments();
-    if (id == null) { $("detail").hidden = true; return; }
+    if (id == null) { closeDetail(); return; }
     const s = schoolById(id);
     if (!s || !fly) return;
     // From search: frame the school's own catchment when it has one, otherwise zoom to the school.
