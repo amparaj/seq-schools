@@ -440,7 +440,7 @@
   }
 
   /* ---------------- state school annual reports (Report tab) ---------------- */
-  // data/annual.json: {reportYear, years, items: {parent, student, staff}, schools: {id: {att, attYr, cls, sda, sos}}},
+  // data/annual.json: {reportYear, years, y12Years, items: {parent, student, staff}, schools: {id: {att, attYr, cls, sda, sos, y12}}},
   // every series aligned to `years` (2013–2025, merged from each school's reports). On load each school gets
   // `years`, and `sos` is rebuilt from values aligned to `items` into [question, values] pairs.
   // Only Government schools publish this template, so Catholic and Independent schools have no entry.
@@ -495,7 +495,7 @@
     const why = s.sector === "Government"
       ? `No ${ANNUAL ? ANNUAL.reportYear : ""} annual report was found on this school's website.`
       : `${esc(s.sector)} schools publish their own annual reports in their own formats, so this data isn't collected for them.`;
-    return `<p class="small" style="margin-top:0">Attendance, class sizes, School Opinion Survey results and disciplinary absences come from Queensland state school annual reports.</p>
+    return `<p class="small" style="margin-top:0">Attendance, class sizes, School Opinion Survey results, disciplinary absences and Year 12 outcomes come from Queensland state school annual reports.</p>
       <p class="muted small">${why}</p>
       ${s.url ? `<div class="links"><a href="${esc(/^https?:/i.test(s.url) ? s.url : "https://" + s.url)}" target="_blank" rel="noopener">School website <span>↗</span></a></div>` : ""}`;
   }
@@ -522,6 +522,55 @@
   function yearTable(ys, rows, fmtV) {
     return `<table class="cmp-table yr-table"><thead><tr><th></th>${ys.map((y) => `<th>${y}</th>`).join("")}</tr></thead>
       <tbody>${rows.map(([label, vals]) => `<tr><th scope="row">${esc(label)}</th>${vals.map((v) => `<td>${fmtV(v)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+  }
+
+  /* Year 12 outcomes: a.y12 = {key: values aligned to ANNUAL.y12Years}, by cohort year. Up to 2019 Year 12s
+     got an OP; from 2020 an ATAR, which the reports don't include (QTAC holds it). The table follows the
+     slider year with no clamping, never spans the two systems, and marks missing years "n/a". */
+  const LAST_OP = 2019;
+  const Y12_ROWS = {
+    both: [["ss", "Received a Senior Statement", fmt], ["qcia", "Awarded a QCIA", fmt]],
+    op: [["qce", "Awarded a QCE", fmt], ["op", "Received an OP", fmt], ["op115", "OP 1–15 or IB Diploma, % of OP/IBD-eligible", pct],
+      ["qtac", "QTAC applicants offered a place", pct]],
+    atar: [["qcePct", "Awarded a QCE or QCIA", pct]],
+    after: [["any", "Awarded a QCE, IBD or VET qualification, or doing a SAT", pct], ["vet", "Awarded one or more VET qualifications", fmt],
+      ["cert2p", "… Certificate II or above", fmt], ["cert3p", "… Certificate III or above", fmt], ["sat", "Doing a school-based apprenticeship or traineeship (SAT)", fmt]],
+  };
+  const OP_BANDS = [["op1", "OP 1–5"], ["op6", "OP 6–10"], ["op11", "OP 11–15"], ["op16", "OP 16–20"], ["op21", "OP 21–25"]];
+  const y12Rows = (y) => [...Y12_ROWS.both, ...(y <= LAST_OP ? Y12_ROWS.op : Y12_ROWS.atar), ...Y12_ROWS.after];
+  const y12At = (a, key, y) => a?.y12?.[key]?.[(ANNUAL.y12Years || []).indexOf(y)] ?? null;
+  const NA = `<span class="muted" title="Data unavailable">n/a</span>`;
+  function y12Why(y) {
+    if (y >= 2024) return "the reports stopped including Year 12 outcomes in 2024";
+    if (y >= 2021) return "most 2021–2023 reports print the table as graphics, so it can't be read as text";
+    if (y < (ANNUAL.y12Years || [])[0]) return `the oldest reports still online start with the ${ANNUAL.y12Years[0]} cohort`;
+    return "the report that covered it is no longer on the school's website";
+  }
+  // "2023, as …; 2024–2025, as …": missing years grouped by reason.
+  function y12Gaps(years) {
+    const by = new Map();
+    years.forEach((x) => by.set(y12Why(x), [...(by.get(y12Why(x)) || []), x]));
+    return [...by].map(([why, ys]) => `${ys.length > 1 ? `${ys[0]}–${last(ys)}` : ys[0]}, as ${why}`).join("; ");
+  }
+  const y12Note = (y) => (y <= LAST_OP
+    ? "Up to 2019, Year 12s received an Overall Position (OP); the 2020 cohort was the first to receive an ATAR instead."
+    : "ATARs are calculated by QTAC, not the Department, so the reports don't include them. 2020 was the first ATAR year, a break in the series; from 2020 visa students are counted too.");
+
+  function year12Card(s, a) {
+    if (s.type === "Primary" && !a.y12) return "";  // some special schools listed as Primary teach Year 12
+    const y = YEARS[state.yearIdx], era = (x) => x <= LAST_OP;
+    const win = [y - 2, y - 1, y].filter((x) => era(x) === era(y));
+    const missing = win.filter((x) => !Object.keys(a.y12 || {}).some((k) => y12At(a, k, x) != null));
+    if (missing.length === win.length) {
+      return chartCard("Year 12 outcomes", "", `<p class="muted small" style="margin:0">Data unavailable for ${y12Gaps(win)}.</p>`, y12Note(y));
+    }
+    const rows = y12Rows(y).map(([k, label, f]) => [label, win.map((x) => { const v = y12At(a, k, x); return v == null ? NA : f(v); })]);
+    if (!era(y)) rows.splice(2, 0, ["ATAR", win.map(() => `<span class="muted">not published</span>`)]);
+    const bands = era(y) ? OP_BANDS.map(([k, label]) => [label, win.map((x) => { const v = y12At(a, k, x); return v == null ? NA : fmt(v); })]) : [];
+    const gaps = missing.length ? ` n/a: data unavailable for ${y12Gaps(missing)}.`
+      : rows.some(([, v]) => v.includes(NA)) ? " n/a: not in that year's report." : "";
+    return chartCard("Year 12 outcomes", "by Year 12 cohort", yearTable(win, rows, (v) => v), y12Note(y) + gaps) +
+      (bands.some(([, v]) => v.some((x) => x !== NA)) ? chartCard("Overall Position bands", "students", yearTable(win, bands, (v) => v), "OP 1 is the highest. Only OP-eligible students received one.") : "");
   }
 
   function reportTab(s, col) {
@@ -558,6 +607,7 @@
       ${sdaRows.length ? chartCard("School disciplinary absences", "count", yearTable(win, sdaRows, (v) => (v == null ? "–" : fmt(v))),
         "Each suspension is counted, so one student can account for several. Per 100 students uses this year's enrolment." +
         (win[0] < 2017 ? " Before 2017, short suspensions were 1–5 days and long suspensions 6–20 days (now 1–10 and 11–20)." : "")) : ""}
+      ${year12Card(s, a)}
       <p class="note">Source: State of Queensland (Department of Education), school annual reports, CC BY 4.0. Each year comes from the newest report that includes it; years a school no longer publishes are blank. The Department notes the reports are an information source only.</p>`;
   }
 
@@ -583,8 +633,17 @@
       if (!qs.length) return "";
       return chartCard(SURVEY_LABELS[key], `% agree, ${yr}`, cmpTable(have, qs.map((q) => [esc(q), (s) => pct(sosItem(annualOf(s), key, q))])));
     }).join("");
+    // Year 12 outcomes for the slider's cohort year, when the schools teach Year 12.
+    const y = YEARS[state.yearIdx], y12 = have.filter((s) => s.type !== "Primary" || annualOf(s).y12);
+    const y12Has = y12.filter((s) => Object.keys(annualOf(s).y12 || {}).some((k) => y12At(annualOf(s), k, y) != null));
+    const year12 = y12.length < 2 ? ""
+      : chartCard("Year 12 outcomes", `${y} cohort`, y12Has.length
+        ? cmpTable(y12, [...y12Rows(y).map(([k, label, f]) => [esc(label), (s) => { const v = y12At(annualOf(s), k, y); return v == null ? NA : f(v); }]),
+          ...(y <= LAST_OP ? OP_BANDS.map(([k, label]) => [label, (s) => { const v = y12At(annualOf(s), k, y); return v == null ? NA : fmt(v); }]) : [["ATAR", () => `<span class="muted">not published</span>`]])])
+        : `<p class="muted small" style="margin:0">Data unavailable for ${y12Gaps([y])}.</p>`,
+        y12Note(y) + (y12Has.length && y12Has.length < y12.length ? ` n/a: data unavailable, as ${y12Why(y)}.` : ""));
     return `<p class="muted small" style="margin:0 0 8px"><span class="mono">${yr}</span>${repYearNote()}</p>
-      ${skipped}${cmpTable(have, rows)}${surveys}
+      ${skipped}${cmpTable(have, rows)}${surveys}${year12}
       <p class="note">From each school's annual reports, which cover ${ANNUAL.years[0]}–${last(ANNUAL.years)} where the school still publishes them. Disciplinary absences count suspensions and exclusions in that one year, not students: one student suspended three times counts three. Compare the per 100 students row, since raw counts grow with school size. Source: State of Queensland (Department of Education), CC BY 4.0.</p>`;
   }
 
@@ -1326,6 +1385,7 @@
       ANNUAL = d || { reportYear: null, schools: {} };
       // Older builds kept `years` and [question, values] pairs on each school; leave those as they are.
       ANNUAL.years = ANNUAL.years || Object.values(ANNUAL.schools)[0]?.years || [];
+      ANNUAL.y12Years = ANNUAL.y12Years || [];
       if (ANNUAL.items) Object.values(ANNUAL.schools).forEach((a) => {
         a.years = ANNUAL.years;
         Object.entries(a.sos || {}).forEach(([k, vals]) => {

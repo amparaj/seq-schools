@@ -7,13 +7,24 @@ Usage:
 
 Run build_data.py first: the school list and websites come from data/schools.json.
 
+Every value read is also kept in archive/annual_reports.csv.xz (committed). Each run updates the
+reports it can parse and keeps the rest, so a school deleting an old report, or raw/annual/ being
+lost, never removes data from the site.
+
 Every Queensland state school publishes an annual report on its *.eq.edu.au site from one
 Department of Education template, and older reports usually stay up at the same path with the
 year changed (though many schools have removed some). Each report covers three years; for each
 year the newest report that has it wins. Measures: overall attendance, attendance by year level
-(2016 on), average class size, School Opinion Survey items (parents/caregivers, students, staff)
-and school disciplinary absences. Catholic and Independent schools publish their own reports in
-their own formats, so they're not included.
+(2016 on), average class size, School Opinion Survey items (parents/caregivers, students, staff),
+school disciplinary absences and, for high schools, Year 12 outcomes. Catholic and Independent
+schools publish their own reports in their own formats, so they're not included.
+
+Year 12 outcomes run by cohort year (2011 on: the 2013 report covers 2011–2013). Up to 2019 Year 12s
+got an Overall Position (OP); from 2020 an ATAR, which the reports don't include (QTAC holds it,
+not the Department). OP measures and the QCE count are kept for 2019 and before only; the
+"% QCE or QCIA" measure the new template uses for 2020 on is kept for 2020 on only. Most 2021–2023
+reports draw the table as vector outlines, not text, so those years are only rarely available, and
+the 2024 template dropped the table. Missing years are left blank.
 
 The template has changed over time:
   2010–2012  single-year "% satisfied" measures and class size targets: not used
@@ -25,7 +36,9 @@ The template has changed over time:
 Source: State of Queensland (Department of Education), school annual reports. Department
 websites are licensed CC BY 4.0 (https://qed.qld.gov.au/copyright-statement).
 """
+import csv
 import json
+import lzma
 import re
 import sys
 import threading
@@ -41,10 +54,13 @@ import pymupdf
 ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / "raw" / "annual"
 DATA = ROOT / "data"
+ARCHIVE = ROOT / "archive" / "annual_reports.csv.xz"  # every value from every report; committed
 
 REPORT_YEAR = 2025  # the newest report
 REPORT_YEARS = range(2013, REPORT_YEAR + 1)
 YEARS_OUT = list(range(2013, REPORT_YEAR + 1))
+Y12_YEARS = list(range(2011, REPORT_YEAR + 1))  # Year 12 cohorts: each report covers three
+LAST_OP = 2019  # the last OP cohort; ATARs from 2020
 USER_AGENT = "seq-schools-explorer data build (https://github.com/amparaj)"
 DELAY = 0.5  # seconds between downloads per worker; these are school websites
 WORKERS = 4
@@ -106,6 +122,25 @@ SURVEY_ITEMS = {
     },
 }
 SDA_KEYS = (("short susp", "short"), ("long susp", "long"), ("exclusion", "excl"), ("cancellation", "canc"), ("total", "total"))
+# Year 12 outcome rows, matched on the label's letters and "+" only (older reports print "aw arded",
+# and "Certificate II" must stay apart from "Certificate II+"). Era: "op" = 2019 and before only,
+# "atar" = 2020 on only, None = any year.
+Y12_ROWS = (
+    ("ss", None, r"numberofstudents(?:who)?receiv(?:ing|ed)aseniorstatement"),
+    ("qcia", None, r"numberofstudentsawardeda(?:(?:queensland|qld)certificate(?:of)?individualachievement|qcia)"),
+    ("qce", "op", r"numberofstudentsawardedaqueenslandcertificateofeducation"),
+    ("qcePct", "atar", r"percentageofstudentsawardedaqueenslandcertificateofeducationqceorqcia"),
+    ("any", None, r"percentageofyearstudentswho(?:are|were)completingorcompletedas"),
+    ("vet", None, r"numberofstudentsawardedoneormore(?:vocational|vet)"),
+    ("sat", None, r"numberofstudentswho(?:are|were)completingcontinuingas"),
+    ("cert2p", None, r"numberofstudentsawarded(?:anaustralianqualificationframeworkcertificateiiorabove|avetcertificateii(?:\+|orabove))$"),
+    ("cert3p", None, r"(?:numberofstudentsawardedavet)?certificateiii(?:\+|orabove)$"),
+    ("op", "op", r"numberofstudents(?:who)?receiv(?:ing|ed)an(?:overallposition|op)"),
+    ("op115", "op", r"percentageofopibdeligible"),
+    ("qtac", "op", r"percentageof.*qtacapplicants"),
+)
+OP_BANDS = ("op1", "op6", "op11", "op16", "op21")  # OP 1–5, 6–10, 11–15, 16–20, 21–25
+Y12_ERA = {**{key: era for key, era, _ in Y12_ROWS}, **{b: "op" for b in OP_BANDS}}
 
 
 def schools():
@@ -219,8 +254,8 @@ def header(lines, i):
     return hdr, i
 
 
-def rows(lines, i, hdr):
-    """[(label, {year: value})] from line i to the end of the table.
+def rows(lines, i, hdr, stop=STOP):
+    """[(label, {year: value})] from line i to the end of the table (a line starting with `stop`).
 
     A label may run over several lines; its values follow, one per column. Notes printed
     before the first row are skipped: a line ending a sentence starts a new label.
@@ -229,7 +264,7 @@ def rows(lines, i, hdr):
     shown = [y for y, star in hdr if not star]
     out, label, start = [], [], i
     while i < len(lines) and not YEAR.match(lines[i]):
-        if out and lines[i].startswith(STOP):
+        if out and lines[i].startswith(stop):
             break
         if not out and i - start > 40:
             break  # no rows: an empty table
@@ -335,6 +370,76 @@ CLASS = re.compile(r"^(?:Table \d+: )?Average class size", re.I)
 SDA = re.compile(r"^(?:Type of school disciplinary|Disciplinary Absences$|SCHOOL DISCIPLINARY ABSENCES$)")
 
 
+Y12 = re.compile(r"^(?:Table \d+: )?Outcomes for our Year 12 cohorts|^Table \d+: Year 12 Outcomes", re.I)
+Y12_STOP = ("Note", "Table ", "As at", "Apparent retention", "Overall Position", "OVERALL POSITION",
+            "Vocational", "VOCATIONAL", "Student destinations", "Post-school", "Congratulations")
+OP_TABLE = re.compile(r"^Table \d+: Overall Position")
+VET_TABLE = re.compile(r"^Table \d+: Vocational Education and Training")
+BAND = re.compile(r"^(?:OP )?(\d+) ?[-–] ?\d+$")
+
+
+def y12_key(label):
+    k = re.sub(r"[^a-z+]", "", unicodedata.normalize("NFKC", label).lower())
+    return next((key for key, _, pat in Y12_ROWS if re.match(pat, k)), None)
+
+
+def by_year(lines, first):
+    """Tables printed with a row per year (2013–2018 OP bands and VET certificates): the column
+    labels start at a line matching `first`, then each year is followed by one value per column.
+    Returns {column label: {year: value}} for the first such table with rows."""
+    for k, ln in enumerate(lines):
+        if not first.match(ln):
+            continue
+        cols, i = [], k
+        while i < len(lines) and not YEAR.match(lines[i]) and not VALUE.match(lines[i]) and len(cols) < 6:
+            cols.append(lines[i])
+            i += 1
+        out = {}
+        while i < len(lines) and YEAR.match(lines[i]):
+            vals = lines[i + 1:i + 1 + len(cols)]
+            n = next((j for j, v in enumerate(vals) if YEAR.match(v) or not VALUE.match(v)), len(vals))
+            if n == len(cols):
+                for c, v in zip(cols, vals):
+                    out.setdefault(c, {})[int(YEAR.match(lines[i]).group(1))] = num(v)
+            elif n:
+                break
+            i += 1 + n  # a year with blank cells is followed straight by the next year
+        if out:
+            return out
+    return {}
+
+
+def year12(lines):
+    """{measure: {cohort year: value}} from the Year 12 outcomes tables, each measure kept to its era."""
+    found = {}
+    for k, ln in enumerate(lines):
+        if Y12.match(ln):
+            hdr, j = header(lines, k + 1)
+            if hdr and j - k <= 8:  # the section heading alone (2021 on) is followed by text, not years
+                for lbl, vals in rows(lines, j, hdr, Y12_STOP):
+                    key = y12_key(lbl)
+                    if key and key not in found:
+                        found[key] = vals
+    bands = table(lines, OP_TABLE) or list(by_year(lines, re.compile(r"^OP 1 ?[-–] ?5$")).items())
+    for lbl, vals in bands:
+        m = BAND.match(lbl)
+        if m and f"op{m.group(1)}" in OP_BANDS:
+            found.setdefault(f"op{m.group(1)}", vals)
+    if "cert3p" not in found:
+        certs = table(lines, VET_TABLE) or list(by_year(lines, re.compile(r"^Certificate I$")).items())
+        for lbl, vals in certs:
+            if y12_key(lbl) == "cert3p":
+                found["cert3p"] = vals
+    out = {}
+    for key, vals in found.items():
+        era = Y12_ERA.get(key)
+        keep = {y: v for y, v in vals.items() if v is not None
+                and (era != "op" or y <= LAST_OP) and (era != "atar" or y > LAST_OP)}
+        if keep:
+            out[key] = keep
+    return out
+
+
 def parse(pdf):
     """(title, {measure: ...}) with every series as {year: value}."""
     lines = lines_of(pdf)
@@ -365,18 +470,19 @@ def parse(pdf):
         sda["total"] = {y: sum(v.get(y) or 0 for v in sda.values()) for y in years
                         if any(v.get(y) is not None for v in sda.values())}
     rec["sda"] = sda
+    rec["y12"] = year12(lines)
     return title, {k: v for k, v in rec.items() if v}
 
 
 def merge(reports):
     """Combine one school's reports, newest first: each year's value comes from the newest
     report that has it. Returns the record in the output's layout, aligned to YEARS_OUT."""
-    def series(get):
-        out = [None] * len(YEARS_OUT)
+    def series(get, years=YEARS_OUT):
+        out = [None] * len(years)
         for rec in reports:
             for y, v in (get(rec) or {}).items():
-                if y in YEARS_OUT and v is not None and out[YEARS_OUT.index(y)] is None:
-                    out[YEARS_OUT.index(y)] = v
+                if y in years and v is not None and out[years.index(y)] is None:
+                    out[years.index(y)] = v
         return out if any(v is not None for v in out) else None
 
     def labelled(get):
@@ -403,7 +509,64 @@ def merge(reports):
             sos[key] = vals  # aligned to the top-level "items" list
     if sos:
         out["sos"] = sos
+    y12 = {key: s for key in [k for k, _, _ in Y12_ROWS] + list(OP_BANDS)
+           if (s := series(lambda r: r.get("y12", {}).get(key), Y12_YEARS))}
+    if y12:
+        out["y12"] = y12  # aligned to the top-level "y12Years"
     return out
+
+
+# The archive keeps every value read from every report, so history survives schools deleting old
+# reports (and raw/annual/ being lost). One row per value: host, report (its year), title (the school
+# name it prints), measure, item, year, value. Measures: att (item blank), attYr (year level), cls
+# (phase), sda (type), sos.parent / sos.student / sos.staff (question), y12 (outcome key). Each run
+# replaces the rows of the reports it parses and keeps the rest. Rows are sorted and the xz output is
+# deterministic, so an unchanged archive doesn't change in git.
+ARCHIVE_COLS = ("host", "report", "title", "measure", "item", "year", "value")
+
+
+def flatten(rec):
+    for measure, v in rec.items():
+        if measure == "att":
+            yield from ((measure, "", y, x) for y, x in v.items())
+        elif measure == "sos":
+            for survey, items in v.items():
+                for q, ys in items.items():
+                    yield from ((f"sos.{survey}", q, y, x) for y, x in ys.items())
+        else:
+            for item, ys in v.items():
+                yield from ((measure, item, y, x) for y, x in ys.items())
+
+
+def load_archive():
+    """{(host, report year): (title, rec)} with recs shaped as parse() returns them."""
+    archive = {}
+    if not ARCHIVE.exists():
+        return archive
+    with lzma.open(ARCHIVE, "rt", encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            key = (row["host"], int(row["report"]))
+            rec = archive.setdefault(key, (row["title"], {}))[1]
+            v = float(row["value"])
+            v = int(v) if v.is_integer() else v
+            m, item, y = row["measure"], row["item"], int(row["year"])
+            if m == "att":
+                rec.setdefault(m, {})[y] = v
+            elif m.startswith("sos."):
+                rec.setdefault("sos", {}).setdefault(m[4:], {}).setdefault(item, {})[y] = v
+            else:
+                rec.setdefault(m, {}).setdefault(item, {})[y] = v
+    return archive
+
+
+def save_archive(archive):
+    ARCHIVE.parent.mkdir(exist_ok=True)
+    with lzma.open(ARCHIVE, "wt", encoding="utf-8", newline="", preset=9 | lzma.PRESET_EXTREME) as f:
+        w = csv.writer(f, lineterminator="\n")
+        w.writerow(ARCHIVE_COLS)
+        for (host, report), (title, rec) in sorted(archive.items()):
+            # rows stay in the report's own order: merge() lists year levels and phases in it
+            w.writerows((host, report, title, m, item, y, v) for m, item, y, v in flatten(rec) if v is not None)
 
 
 def norm(name):
@@ -422,12 +585,13 @@ def main():
     if "--no-download" not in sys.argv:
         failed += fetch_all(sorted(by_host))
 
-    out, counts = {}, {}
+    archive = load_archive()
+    out, counts, kept = {}, {}, 0
     for host, group in sorted(by_host.items()):
-        reports, title = [], None
-        for year in sorted(REPORT_YEARS, reverse=True):
+        for year in REPORT_YEARS:
             pdf = pdf_path(host, year)
             if not pdf.exists():
+                kept += (host, year) in archive
                 continue
             try:
                 t, rec = parse(pdf)
@@ -437,13 +601,15 @@ def main():
             if not rec.get("sos") and not rec.get("att"):
                 failed.append((host, f"{year}: no tables found"))
                 continue
-            reports.append(rec)
-            title = title or t
-            counts[year] = counts.get(year, 0) + 1
-        if not reports:
+            archive[(host, year)] = (t, rec)
+        found = [archive[(host, y)] for y in sorted(REPORT_YEARS, reverse=True) if (host, y) in archive]
+        if not found:
             failed.append((host, "no usable reports"))
             continue
-        rec = merge(reports)
+        for y in REPORT_YEARS:
+            counts[y] = counts.get(y, 0) + ((host, y) in archive)
+        title = found[0][0]
+        rec = merge([r for _, r in found])
         # Campuses can share a website; give the reports only to the school the newest one names.
         named = [s for s in group if norm(s["name"]) == norm(title)]
         for s in named or group[:1]:
@@ -453,12 +619,16 @@ def main():
     meta = {
         "reportYear": REPORT_YEAR,
         "years": YEARS_OUT,
+        "y12Years": Y12_YEARS,
         "items": {key: list(items.values()) for key, items in SURVEY_ITEMS.items()},
         "source": "State of Queensland (Department of Education) school annual reports, CC BY 4.0",
     }
     (DATA / "annual.json").write_text(json.dumps({**meta, "schools": out}, separators=(",", ":")), encoding="utf-8")
-    print(f"wrote data/annual.json: {len(out)} schools; reports parsed per year: "
+    save_archive(archive)
+    print(f"wrote data/annual.json: {len(out)} schools; reports used per year: "
           + ", ".join(f"{y} {counts.get(y, 0)}" for y in REPORT_YEARS))
+    print(f"wrote {ARCHIVE.relative_to(ROOT).as_posix()}: {len(archive)} reports"
+          + (f", {kept} of them kept from the archive (PDF no longer in raw/annual/)" if kept else ""))
     print(f"{len(failed)} problems (-v to list)")
     if verbose:
         for host, err in failed:
