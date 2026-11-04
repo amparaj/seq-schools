@@ -343,7 +343,6 @@ abbr[title] { text-decoration: underline dotted; text-underline-offset: 2px; cur
 .chart .tick { font: 9.5px var(--mono); fill: var(--fg-muted); }
 .chart .band { fill: var(--accent); opacity: .1; }
 .chart .median { fill: none; stroke: var(--fg-muted); stroke-width: 1.3; stroke-dasharray: 4 3; }
-.chart .cursor { stroke: var(--fg-muted); stroke-width: 1; stroke-dasharray: 2 3; }
 .stackbar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; gap: 2px; }
 .card .legend { margin-top: 8px; }
 .links { display: grid; gap: 6px; margin-top: 6px; }

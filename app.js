@@ -109,7 +109,8 @@
     if (!state.sizeByEnr) return 16;
     const e = s.enr[state.yearIdx];
     if (e == null) return 12;
-    return Math.round(Math.min(36, Math.max(11, 9 + Math.sqrt(e) * 0.6)));
+    // Area proportional to enrolments, so a school twice the size covers twice the area.
+    return Math.round(Math.min(48, Math.max(8, Math.sqrt(e) * 1.15)));
   }
 
   function makeGroup(sector) {
@@ -322,7 +323,6 @@
         g += `<polyline points="${segs.map(([i, b]) => `${x(i)},${y(b.p50)}`).join(" ")}" class="median"/>`;
       }
     }
-    g += `<line x1="${x(ci)}" x2="${x(ci)}" y1="${T}" y2="${H - B}" class="cursor"/>`;
     series.forEach(({ pts, color, name }) => {
       const d = pts.map(([i, v], k) => `${k && pts[k - 1][0] === i - 1 ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
       g += `<path d="${d}" fill="none" stroke="${color}" stroke-width="2"/>`;
@@ -414,15 +414,15 @@
   function trendsTab(s, col) {
     const bench = (key) => (s.special ? null : benchFor(s.type, key));
     const r1 = (v) => (+v).toFixed(Math.abs(v) < 100 ? 1 : 0).replace(/\.0$/, "");
-    const note = s.special ? "" : `Dashed line: median of SEQ ${s.type.toLowerCase()} schools; shaded band: the middle half.`;
+    const note = s.special ? "" : `Dashed line: median of SEQ ${s.type.toLowerCase()} schools. Shaded band: the middle 50% of those schools.`;
     return `<div class="cards">${[
       chartCard("Students", "enrolments", lineChart({ values: s.enr, color: col, bench: bench("enr") }), note),
       chartCard("Students per teacher", "ratio", lineChart({ values: s.ratio, color: col, bench: bench("ratio"), fmtV: r1 }),
-        "Enrolments divided by teaching staff (FTE). Descriptive, not a quality measure."),
+        "Enrolments divided by full-time equivalent teaching staff."),
       chartCard("Teachers", "FTE", lineChart({ values: s.tfte, color: col, bench: bench("tfte"), fmtV: r1 })),
       chartCard("Non-teaching staff", "FTE", lineChart({ values: s.nfte, color: col, bench: bench("nfte"), fmtV: r1 })),
       chartCard(ICSEA, "index", lineChart({ values: s.icsea, color: "#a8405f", bench: bench("icsea") }),
-        "Index of Community Socio-Educational Advantage. The national average is 1000."),
+        "Index of Community Socio-Educational Advantage. The national average is 1000. Higher means a more advantaged intake, which usually goes with higher test results."),
       chartCard("Language other than English", "%", lineChart({ values: s.lbote, color: col, bench: bench("lbote") })),
       chartCard("Indigenous students", "%", lineChart({ values: s.ind, color: col, bench: bench("ind") })),
     ].join("")}</div>`;
@@ -436,7 +436,7 @@
         <a class="primary" href="${ms}/naplan/results" target="_blank" rel="noopener">NAPLAN results <span>by year level & domain ↗</span></a>
         <a href="${ms}/naplan" target="_blank" rel="noopener">Student progress <span>gain vs similar students ↗</span></a>
       </div>
-      <p class="note">My School's terms of use (clause 6.4) don't allow its content to be reposted on another public website without ACARA's written permission, so the results aren't copied into this map. School-level NAPLAN data can be requested through ACARA's <a href="https://www.acara.edu.au/contact-us/acara-data-access" target="_blank" rel="noopener">data access program</a>.</p>`;
+`;
   }
 
   /* ---------------- state school annual reports (Report tab) ---------------- */
@@ -786,15 +786,15 @@
     const r1 = (v) => (+v).toFixed(Math.abs(v) < 100 ? 1 : 0).replace(/\.0$/, "");
     const series = (key) => list.map((s, k) => ({ values: s[key], color: cmpColor(k), name: s.name }));
     const legend = `<div class="legend">${list.map((s, k) => `<span><i style="background:${cmpColor(k)}"></i>${esc(shortName(s))}</span>`).join("")}</div>`;
-    const note = type ? `Dashed line: median of SEQ ${type.toLowerCase()} schools; shaded band: the middle half.` : "";
+    const note = type ? `Dashed line: median of SEQ ${type.toLowerCase()} schools. Shaded band: the middle 50% of those schools.` : "";
     const card = (title, unit, key, fmtV, extra) =>
       chartCard(title, unit, lineChart({ series: series(key), bench: bench(key), fmtV }) + legend, [extra, note].filter(Boolean).join(" "));
     return `<div class="cards">${[
       card("Students", "enrolments", "enr"),
-      card("Students per teacher", "ratio", "ratio", r1, "Enrolments divided by teaching staff (FTE). Descriptive, not a quality measure."),
+      card("Students per teacher", "ratio", "ratio", r1, "Enrolments divided by full-time equivalent teaching staff."),
       card("Teachers", "FTE", "tfte", r1),
       card("Non-teaching staff", "FTE", "nfte", r1),
-      card(ICSEA, "index", "icsea", fmt, "Index of Community Socio-Educational Advantage. The national average is 1000. Higher means a more advantaged intake, not a better school."),
+      card(ICSEA, "index", "icsea", fmt, "Index of Community Socio-Educational Advantage. The national average is 1000. Higher means a more advantaged intake, which usually goes with higher test results."),
       card("Language other than English", "%", "lbote"),
       card("Indigenous students", "%", "ind"),
     ].join("")}</div>`;
@@ -807,8 +807,7 @@
         <div class="links" style="margin-bottom:12px">
           <a href="https://www.myschool.edu.au/school/${s.id}/naplan/results" target="_blank" rel="noopener">NAPLAN results <span>↗</span></a>
           <a href="https://www.myschool.edu.au/school/${s.id}/naplan" target="_blank" rel="noopener">Student progress <span>↗</span></a>
-        </div>`).join("")}
-      <p class="note">My School's terms of use don't allow its content to be reposted on another public website, so the results aren't copied into this map.</p>`;
+        </div>`).join("")}`;
   }
 
   /* ---------------- Context tab: each measure among schools with a similar intake ---------------- */
@@ -826,28 +825,28 @@
   const CONTEXT = [
     { title: "Attendance", unit: "%", annual: true, ev: "strong", f: (v) => pct(+v.toFixed(1)),
       get: (s) => atYear(annualOf(s), annualOf(s).att),
-      note: "Each day missed is linked to lower NAPLAN results, with no \"safe\" level of absence (Hancock et al., 2013). Attendance also reflects family circumstances, which is why it's set against similar-intake schools." },
+      note: "Every day of school missed is linked to lower NAPLAN results (Hancock et al., 2013). Attendance is also shaped by family circumstances, so it's compared with schools that have a similar intake." },
     { title: "Parent opinion", unit: "avg % agree", annual: true, ev: "moderate", f: pct,
       get: (s) => sosMean(annualOf(s), "parent"),
-      note: "The average across the 15 parent survey items (safety, teaching, progress, communication). A positive school climate is linked to better achievement and wellbeing (Thapa et al., 2013). Self-reported, and response rates vary." },
+      note: "Average of the 15 parent survey questions, covering safety, teaching, progress and communication. Schools with a positive climate tend to have better results and student wellbeing (Thapa et al., 2013). Response rates vary between schools." },
     { title: "Student opinion", unit: "avg % agree", annual: true, ev: "moderate", f: pct,
       get: (s) => sosMean(annualOf(s), "student"),
-      note: "The average across the 12 student survey items. Students' sense of safety, fairness and connection is part of school climate (Thapa et al., 2013). Only some year levels are surveyed." },
+      note: "Average of the 12 student survey questions, covering whether students feel safe, treated fairly and connected to the school (Thapa et al., 2013). Only some year levels take the survey." },
     { title: "Staff opinion", unit: "avg % agree", annual: true, ev: "moderate", f: pct,
       get: (s) => sosMean(annualOf(s), "staff"),
-      note: "The average across the 11 staff survey items. Teachers' views of their working conditions predict whether they stay (Ladd, 2011), and teacher turnover lowers achievement (Ronfeldt, Loeb & Wyckoff, 2013)." },
+      note: "Average of the 11 staff survey questions. Teachers who rate their working conditions well are more likely to stay (Ladd, 2011), and high teacher turnover lowers student results (Ronfeldt, Loeb & Wyckoff, 2013)." },
     { title: "Disciplinary absences", unit: "per 100 students", annual: true, ev: "moderate", f: dp1,
       get: (s) => sdaPer100(s, annualOf(s)),
-      note: "Suspensions and exclusions per 100 students. Suspension is associated with lower achievement and disengagement (Noltemeyer, Ward & Mcloughlin, 2015). Rates reflect a school's behaviour policy as well as student behaviour, so a low rate isn't automatically better." },
+      note: "Suspensions and exclusions per 100 students. Suspended students tend to have lower results and be less engaged (Noltemeyer, Ward & Mcloughlin, 2015). The rate depends on each school's behaviour policy as well as on student behaviour." },
     { title: "Students per teacher", unit: "ratio", ev: "modest", f: dp1,
       get: (s, i) => s.ratio[i],
-      note: "Smaller classes help most in the first years of school and for disadvantaged students (Krueger, 1999, Tennessee STAR). Across studies the effect is modest (Hattie, 2009). This counts all teaching staff, so actual classes are larger." },
+      note: "Smaller classes help most in the early years of school and for disadvantaged students (Krueger, 1999). Across many studies the overall effect is small (Hattie, 2009). This counts all teaching staff, so real class sizes are larger." },
     { title: "Non-teaching staff", unit: "per 100 students", ev: "none", f: dp1,
       get: (s, i) => (s.nfte[i] != null && s.enr[i] ? (s.nfte[i] / s.enr[i]) * 100 : null),
-      note: "Administration, teacher aides and specialist support staff (FTE). There's no consistent research link between this figure on its own and student outcomes." },
+      note: "Administration, teacher aides and specialist support staff, as full-time equivalents. Research hasn't found a clear link between this number and student results." },
     { title: "Students", unit: "enrolments", ev: "none", f: (v) => fmt(Math.round(v)),
       get: (s, i) => s.enr[i],
-      note: "Research on school size is mixed; smaller schools tend to suit disadvantaged students (Leithwood & Jantzi, 2009). Size tells you more about how a school feels than how good it is." },
+      note: "Research on school size is mixed, though smaller schools tend to suit disadvantaged students (Leithwood & Jantzi, 2009)." },
   ];
   const CONTEXT_REFS = [
     "Hancock, K. J. et al. (2013). <em>Student attendance and educational outcomes: Every day counts.</em> Telethon Institute for Child Health Research.",
@@ -885,7 +884,7 @@
     const rows = places.map((p, k) => `<div class="ctx-row">
         ${list.length > 1 ? `<i style="background:${colors[k]}"></i><span class="ctx-name">${esc(shortName(list[k]))}</span>` : ""}
         <span class="ctx-v">${p.v != null ? m.f(p.v) : "–"}</span>
-        <span class="muted">${p.pos != null ? `higher than ${p.pos}% of ${p.n} similar schools · their median ${m.f(p.med)}` : esc(p.why)}</span>
+        <span class="muted">${p.pos != null ? `higher than ${p.pos}% of ${p.n} similar schools · the median is ${m.f(p.med)}` : esc(p.why)}</span>
       </div>`).join("");
     const yr = m.annual ? repYear() : YEARS[i];
     return `<div class="card ctx">
@@ -906,12 +905,12 @@
       ? (s.special || s.icsea[i] == null
         ? `<p class="small" style="margin-top:0">${s.special ? "Special schools serve very different needs, so they aren't placed against other schools." : `${esc(s.name)} has no ${ICSEA} for ${YEARS[i]}, so similar schools can't be found.`}</p>`
         : `<p class="small" style="margin-top:0">Each measure places ${esc(s.name)} among SEQ ${s.type.toLowerCase()} schools with a similar intake: ${ICSEA} within ±${ICSEA_NEAR} of its ${fmt(s.icsea[i])}, all sectors.</p>`)
-      : `<p class="small" style="margin-top:0">Each school is placed among SEQ schools of its own type with a similar intake (${ICSEA} within ±${ICSEA_NEAR} of its own), so a dot further right means higher than its own peers, not higher than the other schools here.</p>`;
+      : `<p class="small" style="margin-top:0">Each school is placed among SEQ schools of its own type with a similar intake (${ICSEA} within ±${ICSEA_NEAR} of its own). A dot further right means a school is higher than its own peers; the dots don't compare these schools with each other.</p>`;
     return `${intro}
-      <p class="note" style="margin:0 0 10px">This is context, not a ranking. None of these figures measures teaching quality directly, and there's no research basis for combining them into one score: league tables mostly reflect intake, and ranks overlap once uncertainty is counted (Goldstein &amp; Spiegelhalter, 1996).</p>
+      <p class="note" style="margin:0 0 10px">These figures aren't combined into a single score. None of them measures teaching quality directly, and a school's overall standing mostly reflects its intake (Goldstein &amp; Spiegelhalter, 1996).</p>
       <div class="card ctx">
         <div class="card-head"><h4>Learning progress <span class="ctx-ev" data-ev="strong">Strongest measure</span></h4><span class="mono muted">My School</span></div>
-        <p class="small" style="margin:0">NAPLAN gain compared with students who had similar earlier scores and backgrounds is a value-added measure, the approach researchers recommend for judging schools (OECD, 2008). It's published on My School and can't be copied here.</p>
+        <p class="small" style="margin:0">How much students improve in NAPLAN, compared with students who had similar earlier scores and backgrounds. Researchers recommend this kind of measure for judging schools (OECD, 2008). It's published on My School and only accessible there.</p>
         <div class="links" style="margin-top:8px">${list.map((x, k) => `<a href="https://www.myschool.edu.au/school/${x.id}/naplan" target="_blank" rel="noopener">${one ? "Student progress" : `<span class="ctx-name"><i style="background:${colors[k]}"></i>${esc(shortName(x))}</span>`} <span>vs similar students ↗</span></a>`).join("")}</div>
       </div>
       ${CONTEXT.map((m) => contextCard(m, list, colors, idx(m))).join("")}
