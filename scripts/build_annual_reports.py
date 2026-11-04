@@ -238,6 +238,8 @@ def lines_of(pdf):
     out = []
     for page in doc:
         out += [ln.strip() for ln in page.get_text().splitlines()]
+    # a few schools print the change beside the latest value ("86%   +3.6%")
+    out = [re.sub(r"^(\S+%)\s{2,}[+-]\d+(?:\.\d+)?%$", r"", ln) for ln in out]
     return [ln for ln in out if ln]
 
 
@@ -453,39 +455,82 @@ ENR_BODY = re.compile(r"^(?:Table \d+: |Total )?Student enrolments (?:for|at) th
 LEVEL = re.compile(r"^(?:Prep(?: Year)?|Year \d+|Total)$")
 
 
+def page_rows(page):
+    """A page's words grouped into printed lines by their baseline, top to bottom."""
+    rows = []
+    for w in sorted(page.get_text("words"), key=lambda w: (round(w[3]), w[0])):
+        if rows and abs(rows[-1][0][3] - w[3]) < 2.5:
+            rows[-1].append(w)
+        else:
+            rows.append([w])
+    return [sorted(r, key=lambda w: w[0]) for r in rows]
+
+
+def grid(pdf, title, keep=()):
+    """(number of columns, [(label, [(column, year, value)])]) from the first table whose title or header line matches
+    `title`, with each value placed in the year column it sits under. Plain text can't place a
+    blank cell (a year a new school didn't have, Indigenous staff a school doesn't have), so the
+    text parsers drop those rows; this reads them. Columns are numbered left to right, so a grouped
+    header (teaching / non-teaching / Indigenous staff) repeats its years. Cells in `keep` (such as
+    "<5") stay as strings."""
+    for page in pymupdf.open(pdf):
+        rows = page_rows(page)
+        for t, r in enumerate(rows):
+            if not title.search(" ".join(w[4] for w in r)):
+                continue
+            hdr = next((h for h in rows[t:t + 6] if any(YEAR.match(w[4]) for w in h)), None)
+            if not hdr:
+                continue
+            cols = [((w[0] + w[2]) / 2, int(YEAR.match(w[4]).group(1))) for w in hdr if YEAR.match(w[4])]
+            left = min(c for c, _ in cols) - 20
+            out, prev = [], ""
+            for row in rows[rows.index(hdr) + 1:]:
+                label = clean(" ".join(w[4] for w in row if w[2] < left))
+                if label.startswith(("Note", "Table ")):
+                    break
+                vals = [w for w in row if w[0] >= left and VALUE.match(w[4])]
+                if not vals:
+                    prev = label  # a label printed above its values
+                    continue
+                cells = []
+                for w in vals:
+                    k = min(range(len(cols)), key=lambda k: abs(cols[k][0] - (w[0] + w[2]) / 2))
+                    cells.append((k, cols[k][1], w[4] if w[4] in keep else num(w[4])))
+                out.append((label or prev, cells))
+                prev = ""
+            if out:
+                return len(cols), out
+    return 0, []
+
+
+def prefer(placed, text):
+    """Rows read by position, plus rows ({label: {year: value}}) only the text reading found. Where
+    both have a row, position wins: the text reading can shift a row with blank cells."""
+    return {**{k: v for k, v in text.items() if any(x is not None for x in v.values())}, **placed}
+
+
+def grid_rows(pdf, title, key=lambda label: label):
+    """grid() as {key(label): {year: value}}, skipping rows `key` maps to None."""
+    out = {}
+    for label, cells in grid(pdf, title)[1]:
+        if (k := key(label)) is not None:
+            for _, y, v in cells:
+                out.setdefault(k, {})[y] = v
+    return out
+
+
 def enrolments_by_level(pdf):
     """2020 on: ({level: {year: February count}}, {level: {year: August census count}}). The table
-    gives three February columns then three census ones. Year levels a school didn't have yet are
-    blank, which plain text can't place, so each number goes to the year column it sits under."""
+    gives the February columns (three, or fewer for a new school) then the census ones. Year levels a
+    school didn't have yet are blank, so each number goes to the year column it sits under."""
     feb, aug = {}, {}
-    for page in pymupdf.open(pdf):
-        if "Student enrolments by year level" not in page.get_text():
+    ncols, got = grid(pdf, ENR_LEVELS)
+    for label, cells in got:
+        if not LEVEL.match(label):
             continue
-        words = sorted(page.get_text("words"), key=lambda w: (round(w[3]), w[0]))
-        rows = []  # words grouped into printed lines by their baseline
-        for w in words:
-            if rows and abs(rows[-1][0][3] - w[3]) < 2.5:
-                rows[-1].append(w)
-            else:
-                rows.append([w])
-        title = next((i for i, r in enumerate(rows) if "enrolments" in " ".join(w[4] for w in r)), None)
-        hdr = next((r for r in rows[title or 0:] if sum(bool(YEAR.match(w[4])) for w in r) == 6), None)
-        if title is None or not hdr:
-            continue
-        cols = [((w[0] + w[2]) / 2, int(YEAR.match(w[4]).group(1)), k) for k, w in enumerate(w for w in hdr if YEAR.match(w[4]))]
-        left = min(c for c, _, _ in cols) - 20
-        for r in rows[rows.index(hdr) + 1:]:
-            label = " ".join(w[4] for w in r if w[2] < left)
-            if label.startswith(("Notes", "Table")):
-                break
-            if not LEVEL.match(label):
-                continue
-            level = "Prep Year" if label.startswith("Prep") else label
-            for w in r:
-                if w[2] >= left and VALUE.match(w[4]):
-                    _, y, k = min(cols, key=lambda c: abs(c[0] - (w[0] + w[2]) / 2))
-                    (feb if k < 3 else aug).setdefault(level, {})[y] = num(w[4])
-        break
+        level = "Prep Year" if label.startswith("Prep") else label
+        for k, y, v in cells:
+            (feb if k < ncols // 2 else aug).setdefault(level, {})[y] = v
     return feb, aug
 
 
@@ -525,12 +570,26 @@ def student_body(lines):
 
 
 WORKFORCE = re.compile(r"workforce composition|^staff composition", re.I)
+WORKFORCE_TABLE = re.compile(r"^Table \d+: Workforce composition", re.I)
+ATT_TABLE = re.compile(r"^Table \d+: Overall student attendance", re.I)
+
+
+def workforce_grid(pdf):
+    """2020 on, by position: rows with blank cells (usually no Indigenous staff) for workforce()."""
+    ncols, got = grid(pdf, WORKFORCE_TABLE, keep=("<5",))
+    out = {}
+    for label, cells in got:
+        kind = "Head" if re.match(r"^Headcounts?$", label, re.I) else "Fte" if re.match(r"^(?:FTE|Full-time equivalents)$", label, re.I) else None
+        if kind and ncols % 3 == 0:
+            for k, y, v in cells:
+                out.setdefault("tni"[k // (ncols // 3)] + kind, {})[y] = v
+    return out
 
 
 def workforce(lines, report):
     """Headcount and FTE of teaching, non-teaching and Indigenous staff. 2013–2019 reports give the
     report year only (3 values a row); 2020 on, three years for each group (9 values). Indigenous
-    staff are usually "<5", which is kept as the string."""
+    staff are usually "<5", which is kept as the string, or left blank when there are none."""
     groups = ("t", "n", "i")
     for k, ln in enumerate(lines):
         if not WORKFORCE.search(ln):
@@ -547,9 +606,10 @@ def workforce(lines, report):
                 vals.append(lines[i + 1 + len(vals)])
             # a year header means three years a group; otherwise the report year (a page number can follow)
             cols = years[:3] if len(years) >= 3 else [report]
-            if len(vals) < 3 * len(cols):
+            # schools with no Indigenous staff leave those cells blank, so only two groups are printed
+            if len(vals) < 2 * len(cols):
                 continue
-            for g, group in enumerate(groups):
+            for g, group in enumerate(groups[: len(vals) // len(cols)]):
                 for c, y in enumerate(cols):
                     v = vals[g * len(cols) + c]
                     out.setdefault(group + kind, {})[y] = "<5" if v == "<5" else num(v)
@@ -631,16 +691,24 @@ def parse(pdf):
         if items:
             rec.setdefault("sos", {})[key] = items
 
-    att = labelled_row(lines, ATT_OVERALL)
+    # Tables are read by position with grid() where it finds them, since blank cells (new schools,
+    # composite classes, no Indigenous staff) shift values in the plain text; the text reading
+    # supplies rows grid() can't find, such as tables split across pages.
+    att = prefer(grid_rows(pdf, ATT_TABLE, lambda lbl: "att" if ATT_OVERALL.match(lbl) else None),
+                 {"att": labelled_row(lines, ATT_OVERALL) or {}}).get("att")
     if att:
         rec["att"] = att
-    rec["attYr"] = {("Prep Year" if y == "Prep" else y): v for y, v in table(lines, ATT_LEVELS) if re.fullmatch(r"Prep(?: Year)?|Year \d+", y)}
-    rec["cls"] = {phase(y): v for y, v in table(lines, CLASS) if phase(y) and any(x is not None for x in v.values())}
+    level = lambda y: ("Prep Year" if y == "Prep" else y) if re.fullmatch(r"Prep(?: Year)?|Year \d+", y) else None
+    rec["attYr"] = prefer(grid_rows(pdf, ATT_LEVELS, level), {level(y): v for y, v in table(lines, ATT_LEVELS) if level(y)})
+    rec["cls"] = {k: v for k, v in prefer(grid_rows(pdf, CLASS, phase), {phase(y): v for y, v in table(lines, CLASS) if phase(y)}).items()
+                  if any(x is not None for x in v.values())}
+    sda_key = lambda lbl: next((k for prefix, k in SDA_KEYS if lbl.lower().startswith(prefix)), None)
     sda = {}
     for lbl, v in table(lines, SDA):
-        key = next((k for prefix, k in SDA_KEYS if lbl.lower().startswith(prefix)), None)
+        key = sda_key(lbl)
         if key and key not in sda:
             sda[key] = v
+    sda = prefer(grid_rows(pdf, SDA, sda_key), sda)
     if sda and "total" not in sda:
         years = {y for v in sda.values() for y in v}
         sda["total"] = {y: sum(v.get(y) or 0 for v in sda.values()) for y in years
@@ -649,7 +717,7 @@ def parse(pdf):
     rec["y12"] = year12(lines)
     rec["enrYrFeb"], rec["enrYr"] = enrolments_by_level(pdf)
     rec["body"] = {**student_body(lines), **retention(lines)}
-    rec["staff"] = {**workforce(lines, report), **staff(lines)}
+    rec["staff"] = {**prefer(workforce_grid(pdf), workforce(lines, report)), **staff(lines)}
     rec["attDist"] = attendance_distribution(lines)
     return title, {k: v for k, v in rec.items() if v}
 
