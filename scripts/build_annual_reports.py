@@ -11,6 +11,13 @@ Every value read is also kept in archive/annual_reports.csv.xz (committed). Each
 reports it can parse and keeps the rest, so a school deleting an old report, or raw/annual/ being
 lost, never removes data from the site.
 
+The site shows 2020 on only (FIRST_YEAR): only those reports are downloaded and used, and older
+years in them are left out. The archive still holds everything parsed from the 2013–2019 reports,
+and the parsing below still handles their templates, so setting FIRST_YEAR = 2013 brings the data
+back (the site's cards for the measures only those reports carry, removed with this change, are in
+git history: student body, Year 10–12 retention, staff attendance and retention, the attendance
+spread chart, OP results).
+
 Every Queensland state school publishes an annual report on its *.eq.edu.au site from one
 Department of Education template, and older reports usually stay up at the same path with the
 year changed (though many schools have removed some). Each report covers three years; for each
@@ -57,9 +64,10 @@ DATA = ROOT / "data"
 ARCHIVE = ROOT / "archive" / "annual_reports.csv.xz"  # every value from every report; committed
 
 REPORT_YEAR = 2025  # the newest report
-REPORT_YEARS = range(2013, REPORT_YEAR + 1)
-YEARS_OUT = list(range(2013, REPORT_YEAR + 1))
-Y12_YEARS = list(range(2011, REPORT_YEAR + 1))  # Year 12 cohorts: each report covers three
+FIRST_YEAR = 2020  # the site shows 2020 on (the user's choice); set 2013 to rebuild every year from the archive
+REPORT_YEARS = range(FIRST_YEAR, REPORT_YEAR + 1)
+YEARS_OUT = list(range(FIRST_YEAR, REPORT_YEAR + 1))
+Y12_YEARS = YEARS_OUT  # Year 12 cohorts
 LAST_OP = 2019  # the last OP cohort; ATARs from 2020
 USER_AGENT = "seq-schools-explorer data build (https://github.com/amparaj)"
 DELAY = 0.5  # seconds between downloads per worker; these are school websites

@@ -441,7 +441,7 @@
 
   /* ---------------- state school annual reports (Report tab) ---------------- */
   // data/annual.json: {reportYear, years, y12Years, items: {parent, student, staff}, schools: {id: {att, attYr, cls, sda, sos, y12}}},
-  // every series aligned to `years` (2013–2025, merged from each school's reports). On load each school gets
+  // every series aligned to `years` (2020–2025, merged from each school's reports). On load each school gets
   // `years`, and `sos` is rebuilt from values aligned to `items` into [question, values] pairs.
   // Only Government schools publish this template, so Catholic and Independent schools have no entry.
   let ANNUAL = null;
@@ -524,61 +524,47 @@
       <tbody>${rows.map(([label, vals]) => `<tr><th scope="row">${esc(label)}</th>${vals.map((v) => `<td>${fmtV(v)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
   }
 
-  /* Year 12 outcomes: a.y12 = {key: values aligned to ANNUAL.y12Years}, by cohort year. Up to 2019 Year 12s
-     got an OP; from 2020 an ATAR, which the reports don't include (QTAC holds it). The table follows the
-     slider year with no clamping, never spans the two systems, and marks missing years "n/a". */
-  const LAST_OP = 2019;
-  const Y12_ROWS = {
-    both: [["ss", "Received a Senior Statement", fmt], ["qcia", "Awarded a QCIA", fmt]],
-    op: [["qce", "Awarded a QCE", fmt], ["op", "Received an OP", fmt], ["op115", "OP 1–15 or IB Diploma, % of OP/IBD-eligible", pct],
-      ["qtac", "QTAC applicants offered a place", pct]],
-    atar: [["qcePct", "Awarded a QCE or QCIA", pct]],
-    after: [["any", "Awarded a QCE, IBD or VET qualification, or doing a SAT", pct], ["vet", "Awarded one or more VET qualifications", fmt],
-      ["cert2p", "… Certificate II or above", fmt], ["cert3p", "… Certificate III or above", fmt], ["sat", "Doing a school-based apprenticeship or traineeship (SAT)", fmt]],
-  };
-  const OP_BANDS = [["op1", "OP 1–5"], ["op6", "OP 6–10"], ["op11", "OP 11–15"], ["op16", "OP 16–20"], ["op21", "OP 21–25"]];
-  const y12Rows = (y) => [...Y12_ROWS.both, ...(y <= LAST_OP ? Y12_ROWS.op : Y12_ROWS.atar), ...Y12_ROWS.after];
+  /* Year 12 outcomes: a.y12 = {key: values aligned to ANNUAL.y12Years}, by cohort year. Since 2020 Year 12s
+     get an ATAR, which the reports don't include (QTAC holds it). Most 2021–2023 reports draw the table as
+     graphics, and the 2024 template dropped it, so most schools have 2020 only. */
+  const Y12_ROWS = [["ss", "Received a Senior Statement", fmt], ["qcia", "Awarded a QCIA", fmt], ["qcePct", "Awarded a QCE or QCIA", pct],
+    ["any", "Awarded a QCE, IBD or VET qualification, or doing a SAT", pct], ["vet", "Awarded one or more VET qualifications", fmt],
+    ["cert2p", "… Certificate II or above", fmt], ["cert3p", "… Certificate III or above", fmt], ["sat", "Doing a school-based apprenticeship or traineeship (SAT)", fmt]];
   const y12At = (a, key, y) => a?.y12?.[key]?.[(ANNUAL.y12Years || []).indexOf(y)] ?? null;
   const NA = `<span class="muted" title="Data unavailable">n/a</span>`;
   const NOT_PUBLISHED = `<span class="muted">not published</span>`;
+  // Why a year is missing: before the years the site covers, or the report that had it is gone.
+  const whyMissing = (x) => (x < ANNUAL.years[0]
+    ? `this site covers annual reports from ${ANNUAL.years[0]} on`
+    : "the report that covered it is no longer on the school's website");
   function y12Why(y) {
     if (y >= 2024) return "the reports stopped including Year 12 outcomes in 2024";
     if (y >= 2021) return "most 2021–2023 reports print the table as graphics, so it can't be read as text";
-    if (y < (ANNUAL.y12Years || [])[0]) return `the oldest reports still online start with the ${ANNUAL.y12Years[0]} cohort`;
-    return "the report that covered it is no longer on the school's website";
+    return whyMissing(y);
   }
-  // Why a measure is missing for year x: it was dropped from the template after `until`, starts at
-  // `first`, or the school no longer publishes the report that had it.
-  const whyMissing = (first, until, what = "it") => (x) =>
-    until != null && x > until ? `the reports stopped including ${what} after ${until}`
-      : x < first ? `the reports only include ${what} from ${first}`
-        : "the report that covered it is no longer on the school's website";
   // "2023, as …; 2024–2025, as …": missing years grouped by reason.
   function gapText(years, why) {
     const by = new Map();
     years.forEach((x) => by.set(why(x), [...(by.get(why(x)) || []), x]));
     return [...by].map(([w, ys]) => `${ys.length > 1 ? `${ys[0]}–${last(ys)}` : ys[0]}, as ${w}`).join("; ");
   }
-  const y12Note = (y) => (y <= LAST_OP
-    ? "Up to 2019, Year 12s received an Overall Position (OP); the 2020 cohort was the first to receive an ATAR instead."
-    : "ATARs are calculated by QTAC, not the Department, so the reports don't include them. 2020 was the first ATAR year, a break in the series; from 2020 visa students are counted too.");
+  const Y12_NOTE = "ATARs are calculated by QTAC, not the Department, so the reports don't include them. From 2020 visa students are counted too.";
 
   /* A year-by-year table that follows the slider: up to three years ending at the slider year. When the
      school has nothing for that year, it says why and shows the nearest years it does have instead.
      Missing cells are "n/a", with the reasons in the note. Options: title, unit, years (the data's
-     axis), has(x), why(x), rows(anchor) → [[label, get(x), format]], span(x) (the table never crosses
-     a change in span), note(anchor), dropEmpty (leave out rows with nothing in the window), always
-     (show the card even when the school has no data), after(win, anchor) (more HTML). */
+     axis), has(x), why(x), rows() → [[label, get(x), format]], note, dropEmpty (leave out rows with
+     nothing in the window), always (show the card even when the school has no data). */
   function periodCard(o) {
-    const y = YEARS[state.yearIdx], span = o.span || (() => 0);
+    const y = YEARS[state.yearIdx];
     const avail = o.years.filter(o.has);
     if (!avail.length) {
-      return o.always ? chartCard(o.title, "", `<p class="muted small" style="margin:0">Not in any of this school's reports that are still online.</p>`, o.note?.(y)) : "";
+      return o.always ? chartCard(o.title, "", `<p class="muted small" style="margin:0">Not in any of this school's reports that are still online.</p>`, o.note) : "";
     }
     const anchor = o.has(y) ? y : [...avail].reverse().find((x) => x < y) ?? avail[0];
-    const win = [anchor - 2, anchor - 1, anchor].filter((x) => o.years.includes(x) && span(x) === span(anchor));
+    const win = [anchor - 2, anchor - 1, anchor].filter((x) => o.years.includes(x));
     const missing = win.filter((x) => !o.has(x));
-    let rows = o.rows(anchor).map(([label, get, f]) => [label, win.map((x) => {
+    let rows = o.rows().map(([label, get, f]) => [label, win.map((x) => {
       const v = get(x);
       return v == null ? NA : v.html ?? (typeof v === "string" ? esc(v) : f(v));  // {html} is shown as is
     })]);
@@ -587,8 +573,7 @@
       : `<p class="muted small" style="margin:0 0 6px">No data for ${y}, as ${o.why(y)}. Showing ${anchor < y ? "the latest" : "the earliest"} year${win.length > 1 ? "s" : ""} this school has.</p>`;
     const gaps = missing.length ? ` n/a: no data for ${gapText(missing, o.why)}.`
       : rows.some(([, v]) => v.includes(NA)) ? " n/a: not in that year's report." : "";
-    return chartCard(o.title, o.unit, lead + yearTable(win, rows, (v) => v), ((o.note ? o.note(anchor) : "") + gaps).trim()) +
-      (o.after ? o.after(win, anchor) : "");
+    return chartCard(o.title, o.unit, lead + yearTable(win, rows, (v) => v), ((o.note || "") + gaps).trim());
   }
 
   // periodCard for the comparison view: one year, the slider's, or the nearest one any of the schools has.
@@ -601,87 +586,44 @@
     const lead = x === y ? "" : `<p class="muted small" style="margin:0 0 6px">No data for ${y}, as ${o.why(y)}. Showing ${x}, the ${x < y ? "latest" : "earliest"} year these schools have.</p>`;
     const cells = rows.map(([label, get, f]) => [esc(label), (s) => { const v = get(s); return v == null ? NA : v.html ?? (typeof v === "string" ? esc(v) : f(v)); }]);
     const gap = o.list.some((s) => !o.has(s, x)) ? ` n/a: not in that school's ${x} figures (its report may no longer be online).` : "";
-    return chartCard(o.title, o.unit(x), lead + cmpTable(o.list, cells), ((o.note ? o.note(x) : "") + gap).trim());
+    return chartCard(o.title, o.unit(x), lead + cmpTable(o.list, cells), ((o.note || "") + gap).trim());
   }
 
   function year12Card(s, a) {
     if (s.type === "Primary" && !a.y12) return "";  // some special schools listed as Primary teach Year 12
-    const at = (k) => (x) => y12At(a, k, x);
+    const rows = Y12_ROWS.map(([k, label, f]) => [label, (x) => y12At(a, k, x), f]);
+    rows.splice(2, 0, ["ATAR", () => ({ html: NOT_PUBLISHED }), null]);
     return periodCard({
       title: "Year 12 outcomes", unit: "by Year 12 cohort", years: ANNUAL.y12Years, always: true,
       has: (x) => Object.keys(a.y12 || {}).some((k) => y12At(a, k, x) != null),
-      why: y12Why, span: (x) => x <= LAST_OP, note: y12Note,
-      rows: (anchor) => {
-        const rows = y12Rows(anchor).map(([k, label, f]) => [label, at(k), f]);
-        if (anchor > LAST_OP) rows.splice(2, 0, ["ATAR", () => ({ html: NOT_PUBLISHED }), null]);
-        return rows;
-      },
-      after: (win, anchor) => {
-        if (anchor > LAST_OP || !win.some((x) => OP_BANDS.some(([k]) => y12At(a, k, x) != null))) return "";
-        const bands = OP_BANDS.map(([k, label]) => [label, win.map((x) => { const v = y12At(a, k, x); return v == null ? NA : fmt(v); })]);
-        return chartCard("Overall Position bands", "students", yearTable(win, bands, (v) => v), "OP 1 is the highest. Only OP-eligible students received one.");
-      },
+      why: y12Why, note: Y12_NOTE, rows: () => rows,
     });
   }
 
-  /* Enrolment, student body, staff and attendance spread: a.enrYr = [[year level, values]], a.body, a.staff
-     and a.attDist = {key: values}, all aligned to ANNUAL.years. Most were last published in 2019 reports. */
-  const LAST_OLD = 2019;
+  // Enrolments by year level (a.enrYr = [[year level, values]]) and workforce (a.staff = {key: values}),
+  // aligned to ANNUAL.years.
   const yrVal = (a, vals, x) => vals?.[a.years.indexOf(x)] ?? null;
-  const hasAny = (a, group) => (x) => Object.values(group || {}).some((vals) => yrVal(a, vals, x) != null);
-  const DIST = [["lt85", "Under 85%"], ["85to90", "85% to under 90%"], ["90to95", "90% to under 95%"], ["95plus", "95% or more"]];
+  const STAFF_ROWS = [["tHead", "Teaching staff, headcount"], ["tFte", "Teaching staff, full-time equivalent"],
+    ["nHead", "Non-teaching staff, headcount"], ["nFte", "Non-teaching staff, full-time equivalent"],
+    ["iHead", "Aboriginal and Torres Strait Islander staff, headcount"]];
 
-  function enrolmentCards(s, a) {
+  function enrolmentCard(s, a) {
     const levels = a.enrYr || [];
-    const byLevel = periodCard({
-      title: "Enrolments by year level", unit: "students, August census", years: ANNUAL.years, dropEmpty: true,
-      has: (x) => levels.some(([, vals]) => yrVal(a, vals, x) != null),
-      why: whyMissing(2018, null, "enrolments by year level"),
-      rows: () => levels.map(([lvl, vals]) => [lvl, (x) => yrVal(a, vals, x), fmt]),
-      note: () => "Full- and part-time students at the August census. The reports also give February counts.",
-    });
-    const b = a.body || {}, get = (k) => (x) => yrVal(a, b[k], x);
-    const body = periodCard({
-      title: "Student body", unit: "", years: ANNUAL.years, dropEmpty: true,
-      has: hasAny(a, b), why: whyMissing(ANNUAL.years[0], LAST_OLD, "these figures"),
-      rows: () => [["Students", get("total"), fmt], ["Girls", get("girls"), fmt], ["Boys", get("boys"), fmt],
-        ["Aboriginal and Torres Strait Islander students", get("ind"), fmt],
-        ["Enrolment continuity, February to November", get("cont"), pct],
-        ["Year 10 to Year 12 apparent retention", get("ret"), pct], ["… Aboriginal and Torres Strait Islander students", get("retInd"), pct]],
-      note: () => "August census counts. Enrolment continuity is the share of students enrolled in February who were still enrolled in November. Apparent retention is Year 12 enrolment as a share of the same cohort's Year 10 enrolment two years earlier, so students joining can take it over 100%.",
-    });
-    return byLevel + body;
-  }
-
-  function staffCards(s, a) {
-    const st = a.staff || {}, get = (k) => (x) => yrVal(a, st[k], x);
-    const wf = ["tHead", "tFte", "nHead", "nFte", "iHead", "iFte"];
-    const workforce = periodCard({
-      title: "Staff", unit: "", years: ANNUAL.years, dropEmpty: true,
-      has: (x) => wf.some((k) => get(k)(x) != null),
-      why: (x) => (x < ANNUAL.years[0] ? whyMissing(ANNUAL.years[0], null)(x) : "the report for that year is no longer on the school's website"),
-      rows: () => [["Teaching staff, headcount", get("tHead"), fmt], ["Teaching staff, full-time equivalent", get("tFte"), fmt],
-        ["Non-teaching staff, headcount", get("nHead"), fmt], ["Non-teaching staff, full-time equivalent", get("nFte"), fmt],
-        ["Aboriginal and Torres Strait Islander staff, headcount", get("iHead"), fmt]],
-      note: () => "Teaching staff include school leaders. Reports before 2020 give only their own year.",
-    });
-    const stability = periodCard({
-      title: "Staff attendance and retention", unit: "%", years: ANNUAL.years, dropEmpty: true,
-      has: (x) => get("att")(x) != null || get("kept")(x) != null,
-      why: whyMissing(ANNUAL.years[0], LAST_OLD, "staff attendance and retention"),
-      rows: () => [["Staff attendance", get("att"), pct], ["Staff retained from the previous year", get("kept"), pct]],
-      note: () => "Attendance of permanent and temporary staff and school leaders. Retained: staff from the end of the previous year who stayed the whole year. Each report gives retention for its own year only, so a year is missing where that report is no longer online.",
-    });
-    return workforce + stability;
-  }
-
-  function attDistCard(s, a) {
-    const d = a.attDist || {};
     return periodCard({
-      title: "Attendance spread", unit: "% of students", years: ANNUAL.years,
-      has: hasAny(a, d), why: whyMissing(ANNUAL.years[0], LAST_OLD, "this chart"),
-      rows: () => DIST.map(([k, label]) => [label, (x) => yrVal(a, d[k], x), pct]),
-      note: () => "Students grouped by their own attendance rate. A student at 90% misses about a day every two weeks.",
+      title: "Enrolments by year level", unit: "students, August census", years: ANNUAL.years, dropEmpty: true,
+      has: (x) => levels.some(([, vals]) => yrVal(a, vals, x) != null), why: whyMissing,
+      rows: () => levels.map(([lvl, vals]) => [lvl, (x) => yrVal(a, vals, x), fmt]),
+      note: "Full- and part-time students at the August census. The reports also give February counts.",
+    });
+  }
+
+  function staffCard(s, a) {
+    const st = a.staff || {};
+    return periodCard({
+      title: "Staff", unit: "", years: ANNUAL.years, dropEmpty: true,
+      has: (x) => STAFF_ROWS.some(([k]) => yrVal(a, st[k], x) != null), why: whyMissing,
+      rows: () => STAFF_ROWS.map(([k, label]) => [label, (x) => yrVal(a, st[k], x), fmt]),
+      note: "Teaching staff include school leaders.",
     });
   }
 
@@ -716,12 +658,10 @@
         ${a.sda ? chartCard("Disciplinary absences", "per 100 students", lineChart({ values: sda100Years(s, a), color: col, fmtV: r1 })) : ""}
       </div>
       ${attRows.length ? chartCard("Attendance by year level", "%", yearTable(win, attRows, pct), "Days attended as a share of enrolled school days, full-time students.") : ""}
-      ${attDistCard(s, a)}
       ${sdaRows.length ? chartCard("School disciplinary absences", "count", yearTable(win, sdaRows, (v) => (v == null ? "–" : fmt(v))),
-        "Each suspension is counted, so one student can account for several. Per 100 students uses this year's enrolment." +
-        (win[0] < 2017 ? " Before 2017, short suspensions were 1–5 days and long suspensions 6–20 days (now 1–10 and 11–20)." : "")) : ""}
-      ${enrolmentCards(s, a)}
-      ${staffCards(s, a)}
+        "Each suspension is counted, so one student can account for several. Per 100 students uses this year's enrolment.") : ""}
+      ${enrolmentCard(s, a)}
+      ${staffCard(s, a)}
       ${year12Card(s, a)}
       <p class="note">Source: State of Queensland (Department of Education), school annual reports, CC BY 4.0. Each year comes from the newest report that includes it; years a school no longer publishes are blank. The Department notes the reports are an information source only.</p>`;
   }
@@ -748,43 +688,28 @@
       if (!qs.length) return "";
       return chartCard(SURVEY_LABELS[key], `% agree, ${yr}`, cmpTable(have, qs.map((q) => [esc(q), (s) => pct(sosItem(annualOf(s), key, q))])));
     }).join("");
-    const A = (s) => annualOf(s), val = (s, group, k, x) => yrVal(A(s), A(s)[group]?.[k], x);
-    const anyOf = (s, group) => (x) => hasAny(A(s), A(s)[group])(x);
+    const A = (s) => annualOf(s);
     const y12 = have.filter((s) => s.type !== "Primary" || A(s).y12);
     const year12 = y12.length < 2 ? "" : cmpPeriod({
-      title: "Year 12 outcomes", unit: (x) => `${x} cohort`, list: y12, years: ANNUAL.y12Years, why: y12Why, note: y12Note,
+      title: "Year 12 outcomes", unit: (x) => `${x} cohort`, list: y12, years: ANNUAL.y12Years, why: y12Why, note: Y12_NOTE,
       has: (s, x) => Object.keys(A(s).y12 || {}).some((k) => y12At(A(s), k, x) != null),
-      rows: (x) => [...y12Rows(x).map(([k, label, f]) => [label, (s) => y12At(A(s), k, x), f]),
-        ...(x <= LAST_OP ? OP_BANDS.map(([k, label]) => [label, (s) => y12At(A(s), k, x), fmt]) : [["ATAR", () => ({ html: NOT_PUBLISHED }), null]])],
+      rows: (x) => [["ATAR", () => ({ html: NOT_PUBLISHED }), null], ...Y12_ROWS.map(([k, label, f]) => [label, (s) => y12At(A(s), k, x), f])],
     });
     const levels = [...new Set(have.flatMap((s) => (A(s).enrYr || []).map(([l]) => l)))];
     const lv = (s, l, x) => yrVal(A(s), (A(s).enrYr || []).find(([m]) => m === l)?.[1], x);
     const enrol = cmpPeriod({
       title: "Enrolments by year level", unit: (x) => `${x}, August census`, list: have, years: ANNUAL.years,
-      why: whyMissing(2018, null, "enrolments by year level"), has: (s, x) => levels.some((l) => lv(s, l, x) != null),
+      why: whyMissing, has: (s, x) => levels.some((l) => lv(s, l, x) != null),
       rows: (x) => levels.filter((l) => have.some((s) => lv(s, l, x) != null)).map((l) => [l, (s) => lv(s, l, x), fmt]),
     });
-    const body = cmpPeriod({
-      title: "Student body", unit: (x) => `${x}`, list: have, years: ANNUAL.years,
-      why: whyMissing(ANNUAL.years[0], LAST_OLD, "these figures"), has: (s, x) => anyOf(s, "body")(x),
-      rows: (x) => [["Girls", "girls", fmt], ["Boys", "boys", fmt], ["Aboriginal and Torres Strait Islander students", "ind", fmt],
-        ["Enrolment continuity, Feb to Nov", "cont", pct], ["Year 10 to Year 12 retention", "ret", pct]]
-        .filter(([, k]) => have.some((s) => val(s, "body", k, x) != null)).map(([label, k, f]) => [label, (s) => val(s, "body", k, x), f]),
-    });
+    const st = (s, k, x) => yrVal(A(s), A(s).staff?.[k], x);
     const staff = cmpPeriod({
       title: "Staff", unit: (x) => `${x}`, list: have, years: ANNUAL.years,
-      why: () => "the report for that year is no longer on the school's website", has: (s, x) => anyOf(s, "staff")(x),
-      rows: (x) => [["Teaching staff, full-time equivalent", "tFte", fmt], ["Non-teaching staff, full-time equivalent", "nFte", fmt],
-        ["Staff attendance", "att", pct], ["Staff retained from the previous year", "kept", pct]]
-        .filter(([, k]) => have.some((s) => val(s, "staff", k, x) != null)).map(([label, k, f]) => [label, (s) => val(s, "staff", k, x), f]),
-    });
-    const spread = cmpPeriod({
-      title: "Attendance spread", unit: (x) => `% of students, ${x}`, list: have, years: ANNUAL.years,
-      why: whyMissing(ANNUAL.years[0], LAST_OLD, "this chart"), has: (s, x) => anyOf(s, "attDist")(x),
-      rows: (x) => DIST.map(([k, label]) => [label, (s) => val(s, "attDist", k, x), pct]),
+      why: whyMissing, has: (s, x) => STAFF_ROWS.some(([k]) => st(s, k, x) != null),
+      rows: (x) => STAFF_ROWS.filter(([k]) => have.some((s) => st(s, k, x) != null)).map(([k, label]) => [label, (s) => st(s, k, x), fmt]),
     });
     return `<p class="muted small" style="margin:0 0 8px"><span class="mono">${yr}</span>${repYearNote()}</p>
-      ${skipped}${cmpTable(have, rows)}${surveys}${spread}${enrol}${body}${staff}${year12}
+      ${skipped}${cmpTable(have, rows)}${surveys}${enrol}${staff}${year12}
       <p class="note">From each school's annual reports, which cover ${ANNUAL.years[0]}–${last(ANNUAL.years)} where the school still publishes them. Disciplinary absences count suspensions and exclusions in that one year, not students: one student suspended three times counts three. Compare the per 100 students row, since raw counts grow with school size. Source: State of Queensland (Department of Education), CC BY 4.0.</p>`;
   }
 
