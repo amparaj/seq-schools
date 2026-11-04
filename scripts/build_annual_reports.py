@@ -67,7 +67,7 @@ WORKERS = 4
 MISSING = RAW / "missing.json"  # {host: [years]} that returned 404, so reruns skip them
 
 # A table cell: a percentage, a count, or one of the template's "not available" markers.
-VALUE = re.compile(r"^(?:\d+(?:\.\d+)?%?|<5|–|-|—|DW|N/?A)$")
+VALUE = re.compile(r"^(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?%?|<5|–|-|—|DW|N/?A)$")
 YEAR = re.compile(r"^(20\d\d)(\*+)?$")
 SURVEYS = {
     "parent": re.compile(r"^Percentage of parents?/caregivers who agree"),
@@ -207,8 +207,8 @@ def fetch_all(hosts):
 
 
 def num(cell):
-    """'86.3%' -> 86.3, '22' -> 22, anything suppressed -> None."""
-    m = re.match(r"^(\d+(?:\.\d+)?)%?$", cell)
+    """'86.3%' -> 86.3, '1,335' -> 1335, anything suppressed -> None."""
+    m = re.match(r"^(\d+(?:\.\d+)?)%?$", cell.replace(",", ""))
     if not m:
         return None
     v = float(m.group(1))
@@ -440,9 +440,177 @@ def year12(lines):
     return out
 
 
+ENR_LEVELS = re.compile(r"^Table \d+: Student enrolments by year level")
+ENR_BODY = re.compile(r"^(?:Table \d+: |Total )?Student enrolments (?:for|at) this school", re.I)
+LEVEL = re.compile(r"^(?:Prep(?: Year)?|Year \d+|Total)$")
+
+
+def enrolments_by_level(pdf):
+    """2020 on: ({level: {year: February count}}, {level: {year: August census count}}). The table
+    gives three February columns then three census ones. Year levels a school didn't have yet are
+    blank, which plain text can't place, so each number goes to the year column it sits under."""
+    feb, aug = {}, {}
+    for page in pymupdf.open(pdf):
+        if "Student enrolments by year level" not in page.get_text():
+            continue
+        words = sorted(page.get_text("words"), key=lambda w: (round(w[3]), w[0]))
+        rows = []  # words grouped into printed lines by their baseline
+        for w in words:
+            if rows and abs(rows[-1][0][3] - w[3]) < 2.5:
+                rows[-1].append(w)
+            else:
+                rows.append([w])
+        title = next((i for i, r in enumerate(rows) if "enrolments" in " ".join(w[4] for w in r)), None)
+        hdr = next((r for r in rows[title or 0:] if sum(bool(YEAR.match(w[4])) for w in r) == 6), None)
+        if title is None or not hdr:
+            continue
+        cols = [((w[0] + w[2]) / 2, int(YEAR.match(w[4]).group(1)), k) for k, w in enumerate(w for w in hdr if YEAR.match(w[4]))]
+        left = min(c for c, _, _ in cols) - 20
+        for r in rows[rows.index(hdr) + 1:]:
+            label = " ".join(w[4] for w in r if w[2] < left)
+            if label.startswith(("Notes", "Table")):
+                break
+            if not LEVEL.match(label):
+                continue
+            level = "Prep Year" if label.startswith("Prep") else label
+            for w in r:
+                if w[2] >= left and VALUE.match(w[4]):
+                    _, y, k = min(cols, key=lambda c: abs(c[0] - (w[0] + w[2]) / 2))
+                    (feb if k < 3 else aug).setdefault(level, {})[y] = num(w[4])
+        break
+    return feb, aug
+
+
+def student_body(lines):
+    """2013–2019: total, girls, boys, Indigenous (census counts) and enrolment continuity (Feb–Nov %).
+    2018–2019 print a row per measure; earlier reports a row per year, where the Indigenous
+    column may be missing (2013), so counts are taken in order and the percentage is continuity."""
+    names = {"total": "total", "girls": "girls", "boys": "boys", "indigenous": "ind", "enrolmentcontinuity": "cont"}
+    out = {}
+    for lbl, vals in table(lines, ENR_BODY):
+        key = next((v for k, v in names.items() if sig(lbl).startswith(k)), None)
+        if key and key not in out:
+            out[key] = vals
+    if out:
+        return out
+    for k, ln in enumerate(lines):
+        if not ENR_BODY.match(ln) or "Total" not in lines[k + 1:k + 4]:
+            continue
+        i = k + 1
+        while i < len(lines) and not YEAR.match(lines[i]):
+            i += 1
+        while i < len(lines) and YEAR.match(lines[i]):
+            y = int(YEAR.match(lines[i]).group(1))
+            j = i + 1
+            while j < len(lines) and VALUE.match(lines[j]) and not YEAR.match(lines[j]):
+                j += 1
+            cells = lines[i + 1:j]
+            counts = [num(c) for c in cells if not c.endswith("%")]
+            for key, v in zip(("total", "girls", "boys", "ind"), counts):
+                out.setdefault(key, {})[y] = v
+            for c in cells:
+                if c.endswith("%"):
+                    out.setdefault("cont", {})[y] = num(c)
+            i = j
+        break
+    return out
+
+
+WORKFORCE = re.compile(r"workforce composition|^staff composition", re.I)
+
+
+def workforce(lines, report):
+    """Headcount and FTE of teaching, non-teaching and Indigenous staff. 2013–2019 reports give the
+    report year only (3 values a row); 2020 on, three years for each group (9 values). Indigenous
+    staff are usually "<5", which is kept as the string."""
+    groups = ("t", "n", "i")
+    for k, ln in enumerate(lines):
+        if not WORKFORCE.search(ln):
+            continue
+        out, years = {}, []
+        for i in range(k + 1, min(k + 40, len(lines))):
+            if YEAR.match(lines[i]) and int(YEAR.match(lines[i]).group(1)) not in years:
+                years.append(int(YEAR.match(lines[i]).group(1)))
+            kind = "Head" if re.match(r"^Headcounts?$", lines[i], re.I) else "Fte" if re.match(r"^(?:FTE|Full-time equivalents)$", lines[i], re.I) else None
+            if not kind:
+                continue
+            vals = []
+            while i + 1 + len(vals) < len(lines) and VALUE.match(lines[i + 1 + len(vals)]) and len(vals) < 9:
+                vals.append(lines[i + 1 + len(vals)])
+            # a year header means three years a group; otherwise the report year (a page number can follow)
+            cols = years[:3] if len(years) >= 3 else [report]
+            if len(vals) < 3 * len(cols):
+                continue
+            for g, group in enumerate(groups):
+                for c, y in enumerate(cols):
+                    v = vals[g * len(cols) + c]
+                    out.setdefault(group + kind, {})[y] = "<5" if v == "<5" else num(v)
+            if kind == "Fte":
+                return out
+        if out:
+            return out
+    return {}
+
+
+STAFF_ATT = re.compile(r"^Staff attendance for permanent")
+RETAINED = re.compile(r"(\d+(?:\.\d+)?)% of (?:the )?staff (?:were|was) retained by the school for the entire (\d{4})", re.I)
+RETENTION = re.compile(r"^(?:Table \d+: )?Apparent retention rates", re.I)
+
+
+def staff(lines):
+    """2013–2019: staff attendance % (three years) and the % of staff retained from the year before."""
+    out = {}
+    att = labelled_row(lines, STAFF_ATT)
+    if att:
+        out["att"] = att
+    m = RETAINED.search(" ".join(lines))
+    if m:
+        out["kept"] = {int(m.group(2)): num(m.group(1))}
+    return out
+
+
+def retention(lines):
+    """2013–2019: Year 12 enrolment as a % of the same cohort's Year 10 enrolment, all and Indigenous."""
+    out = {}
+    for lbl, vals in table(lines, RETENTION):
+        s = sig(lbl)
+        key = "ret" if s.startswith("yearstudentenrolment") else "retInd" if s.startswith("yearindigenous") else None
+        if key and key not in out:
+            out[key] = vals
+    return out
+
+
+AXIS = ["0%", "20%", "40%", "60%", "80%", "100%"]
+BAR_YEAR = re.compile(r"^\*? ?(20\d\d)\*?$")
+DIST_BANDS = ("lt85", "85to90", "90to95", "95plus")
+
+
+def attendance_distribution(lines):
+    """2013–2019 chart "Proportion of students by attendance rate": % of students attending under
+    85%, 85–90%, 90–95% and 95% or more. The bar labels are text: 12 values (band by band, years in
+    the order the axis lists them), then the 0–100% axis, then the three years. A year is kept
+    only when its four bands add up to about 100, so a chart with a hidden label is skipped."""
+    for k in range(12, len(lines) - 9):
+        if lines[k:k + 6] != AXIS:
+            continue
+        years = [BAR_YEAR.match(ln) for ln in lines[k + 6:k + 9]]
+        vals = [num(v) if VALUE.match(v) else None for v in lines[k - 12:k]]
+        if not all(years) or None in vals:
+            continue
+        out = {}
+        for j, m in enumerate(years):
+            band = [vals[b * 3 + j] for b in range(4)]
+            if 97 <= sum(band) <= 103:
+                for key, v in zip(DIST_BANDS, band):
+                    out.setdefault(key, {})[int(m.group(1))] = v
+        return out
+    return {}
+
+
 def parse(pdf):
     """(title, {measure: ...}) with every series as {year: value}."""
     lines = lines_of(pdf)
+    report = int(re.search(r"-(\d{4})\.pdf$", str(pdf)).group(1))
     rec = {}
     title = lines[3] if len(lines) > 3 else ""
 
@@ -471,6 +639,10 @@ def parse(pdf):
                         if any(v.get(y) is not None for v in sda.values())}
     rec["sda"] = sda
     rec["y12"] = year12(lines)
+    rec["enrYrFeb"], rec["enrYr"] = enrolments_by_level(pdf)
+    rec["body"] = {**student_body(lines), **retention(lines)}
+    rec["staff"] = {**workforce(lines, report), **staff(lines)}
+    rec["attDist"] = attendance_distribution(lines)
     return title, {k: v for k, v in rec.items() if v}
 
 
@@ -513,13 +685,23 @@ def merge(reports):
            if (s := series(lambda r: r.get("y12", {}).get(key), Y12_YEARS))}
     if y12:
         out["y12"] = y12  # aligned to the top-level "y12Years"
+    if (lv := labelled(lambda r: r.get("enrYr"))):
+        out["enrYr"] = lv  # August census; the February counts stay in the archive only
+    for m in ("body", "staff", "attDist"):
+        keys = []
+        for rec in reports:
+            keys += [k for k in rec.get(m, {}) if k not in keys]
+        got = {k: s for k in keys if (s := series(lambda r: r.get(m, {}).get(k)))}
+        if got:
+            out[m] = got
     return out
 
 
 # The archive keeps every value read from every report, so history survives schools deleting old
 # reports (and raw/annual/ being lost). One row per value: host, report (its year), title (the school
 # name it prints), measure, item, year, value. Measures: att (item blank), attYr (year level), cls
-# (phase), sda (type), sos.parent / sos.student / sos.staff (question), y12 (outcome key). Each run
+# (phase), sda (type), sos.parent / sos.student / sos.staff (question), y12 (outcome key), enrYr /
+# enrYrFeb (year level), body, staff and attDist (key). A value is a number or "<5". Each run
 # replaces the rows of the reports it parses and keeps the rest. Rows are sorted and the xz output is
 # deterministic, so an unchanged archive doesn't change in git.
 ARCHIVE_COLS = ("host", "report", "title", "measure", "item", "year", "value")
@@ -547,8 +729,11 @@ def load_archive():
         for row in csv.DictReader(f):
             key = (row["host"], int(row["report"]))
             rec = archive.setdefault(key, (row["title"], {}))[1]
-            v = float(row["value"])
-            v = int(v) if v.is_integer() else v
+            try:
+                v = float(row["value"])
+                v = int(v) if v.is_integer() else v
+            except ValueError:
+                v = row["value"]  # "<5"
             m, item, y = row["measure"], row["item"], int(row["year"])
             if m == "att":
                 rec.setdefault(m, {})[y] = v
