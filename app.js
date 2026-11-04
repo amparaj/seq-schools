@@ -229,6 +229,9 @@
   function renderYear() {
     $("year-label").textContent = YEARS[state.yearIdx];
     $("year-range").value = state.yearIdx;
+    $("yr-step-label").textContent = YEARS[state.yearIdx];
+    $("yr-prev").disabled = state.yearIdx === 0;
+    $("yr-next").disabled = state.yearIdx === YEARS.length - 1;
   }
 
   function setYear(i) {
@@ -851,7 +854,8 @@
     if (!s) { el.hidden = true; return; }
     const i = state.yearIdx, yr = YEARS[i];
     const sec = sectorOf(s.sector), col = cssVar(sec.css);
-    const scroll = el.querySelector(".detail-body")?.scrollTop || 0;
+    // Desktop scrolls .detail-body; on mobile the whole panel scrolls. Keep both positions.
+    const scroll = el.querySelector(".detail-body")?.scrollTop || 0, outer = el.scrollTop;
     const list = compared(), many = list.length > 1;
 
     const body = many
@@ -864,6 +868,8 @@
     el.innerHTML = `
       <div class="detail-head">
         ${many ? compareHead(list) : singleHead(s, col)}
+      </div>
+      <div class="tab-bar">
         <nav class="tabs" role="tablist">${TABS.map(([k, label]) =>
           `<button role="tab" data-tab="${k}" class="${state.tab === k ? "on" : ""}" aria-selected="${state.tab === k}">${label}</button>`).join("")}</nav>
       </div>
@@ -873,12 +879,15 @@
       </div>`;
     el.hidden = false;
     el.querySelector(".detail-body").scrollTop = scroll;
+    el.scrollTop = outer;
     $("detail-close").onclick = () => select(null);
     el.querySelectorAll("[data-tab]").forEach((b) => (b.onclick = () => {
       state.tab = b.dataset.tab;
       writeHash();
       renderDetail();
       el.querySelector(".detail-body").scrollTop = 0;
+      // On mobile, start the new tab just under the pinned tab bar.
+      el.scrollTop = Math.min(el.scrollTop, el.querySelector(".detail-head").offsetHeight);
     }));
     el.querySelectorAll("[data-remove]").forEach((b) => (b.onclick = () => removeCompared(+b.dataset.remove)));
     const add = $("cmp-add");
@@ -1194,6 +1203,8 @@
     $("play").onclick = togglePlay;
     $("year-range").max = YEARS.length - 1;
     $("year-range").addEventListener("input", (e) => setYear(+e.target.value));
+    $("yr-prev").onclick = () => setYear(state.yearIdx - 1);
+    $("yr-next").onclick = () => setYear(state.yearIdx + 1);
     document.addEventListener("keydown", (e) => {
       if (e.target.matches("input, select, textarea")) return;
       if (e.key === "ArrowLeft") setYear(state.yearIdx - 1);
