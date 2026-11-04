@@ -15,7 +15,7 @@
     { max: Infinity, label: "1100+", color: "#5e1029" },
   ];
   const ICSEA_NONE = "#9aa1ad";
-  const ICSEA = `<abbr title="Index of Community Socio-Educational Advantage">ICSEA</abbr>`;
+  const ICSEA = `<abbr title="Index of Community Socio-Educational Advantage. Describes students' family backgrounds (parents' education and occupation), not school quality. Higher = more advantaged intake; national average 1000.">ICSEA</abbr>`;
   // Compared schools get categorical slots 1–4 (CSS vars --c1..--c4), fixed by position.
   const MAX_COMPARE = 4;
   const cmpColor = (k) => cssVar(`--c${k + 1}`);
@@ -344,13 +344,14 @@
   }
 
   /* ---------------- detail panel ---------------- */
-  const TABS = [["overview", "Overview"], ["students", "Students"], ["trends", "Trends"], ["report", "Report"], ["naplan", "NAPLAN"]];
+  const TABS = [["overview", "Overview"], ["students", "Students"], ["trends", "Trends"], ["report", "Report"], ["context", "Context"], ["naplan", "NAPLAN"]];
   const CATCH_FOR_TYPE = { Primary: "primary", Combined: "primary", Secondary: "junior" };
 
-  function benchLine(s, key, i, fmtV = fmt) {
+  // `short` drops the type from the label, for comparison tables where the Type row already shows it.
+  function benchLine(s, key, i, fmtV = fmt, short = false) {
     if (s.special) return "";
     const b = benchFor(s.type, key)[i];
-    return b ? `<div class="cmp">SEQ ${s.type.toLowerCase()} median ${fmtV(b.p50)}</div>` : "";
+    return b ? `<div class="cmp">SEQ ${short ? "" : s.type.toLowerCase() + " "}median ${fmtV(b.p50)}</div>` : "";
   }
 
   function overviewTab(s, i, col) {
@@ -410,7 +411,7 @@
     const bench = (key) => (s.special ? null : benchFor(s.type, key));
     const r1 = (v) => (+v).toFixed(Math.abs(v) < 100 ? 1 : 0).replace(/\.0$/, "");
     const note = s.special ? "" : `Dashed line: median of SEQ ${s.type.toLowerCase()} schools; shaded band: the middle half.`;
-    return [
+    return `<div class="cards">${[
       chartCard("Students", "enrolments", lineChart({ values: s.enr, color: col, bench: bench("enr") }), note),
       chartCard("Students per teacher", "ratio", lineChart({ values: s.ratio, color: col, bench: bench("ratio"), fmtV: r1 }),
         "Enrolments divided by teaching staff (FTE). Descriptive, not a quality measure."),
@@ -420,7 +421,7 @@
         "Index of Community Socio-Educational Advantage. The national average is 1000."),
       chartCard("Language other than English", "%", lineChart({ values: s.lbote, color: col, bench: bench("lbote") })),
       chartCard("Indigenous students", "%", lineChart({ values: s.ind, color: col, bench: bench("ind") })),
-    ].join("");
+    ].join("")}</div>`;
   }
 
   function naplanTab(s) {
@@ -435,7 +436,9 @@
   }
 
   /* ---------------- state school annual reports (Report tab) ---------------- */
-  // data/annual.json: {reportYear, schools: {id: {years, att, attYr, cls, sda, sos: {parent, student, staff}}}}.
+  // data/annual.json: {reportYear, years, items: {parent, student, staff}, schools: {id: {att, attYr, cls, sda, sos}}},
+  // every series aligned to `years` (2013–2025, merged from each school's reports). On load each school gets
+  // `years`, and `sos` is rebuilt from values aligned to `items` into [question, values] pairs.
   // Only Government schools publish this template, so Catholic and Independent schools have no entry.
   let ANNUAL = null;
   const annualOf = (s) => (ANNUAL && ANNUAL.schools[s.id]) || null;
@@ -444,10 +447,30 @@
   const last = (arr) => (arr ? arr[arr.length - 1] : null);
   const reportUrl = (s) => `${s.url.replace(/\/$/, "")}/supportandresources/formsanddocuments/annualreports/annual-report-${ANNUAL.reportYear}.pdf`;
 
-  // SEQ median of the latest year across non-special state schools of the same type.
+  // Reports cover only a few years (ANNUAL.years): follow the slider inside that range, else use the nearest end.
+  const repYear = () => (ANNUAL.years.length ? Math.min(last(ANNUAL.years), Math.max(ANNUAL.years[0], YEARS[state.yearIdx])) : null);
+  const atYear = (a, vals) => (vals ? vals[a.years.indexOf(repYear())] ?? null : null);
+  function repYearNote() {
+    const y = YEARS[state.yearIdx], ry = repYear();
+    return ry != null && y !== ry ? ` · reports cover ${ANNUAL.years[0]}–${last(ANNUAL.years)}, so showing ${ry}, not ${y}` : "";
+  }
+  // Up to three report years ending at the one shown, for the year-by-year tables.
+  const yearWindow = () => {
+    const k = ANNUAL.years.indexOf(repYear());
+    return ANNUAL.years.slice(Math.max(0, k - 2), k + 1);
+  };
+  const pick = (a, vals, ys) => ys.map((y) => vals[a.years.indexOf(y)] ?? null);
+  // A series re-aligned to YEARS, for lineChart.
+  const toYears = (a, vals) => YEARS.map((y) => (vals ? vals[a.years.indexOf(y)] ?? null : null));
+  const sda100Years = (s, a) => YEARS.map((y, i) => {
+    const t = a.sda?.total?.[a.years.indexOf(y)];
+    return s.enr[i] && t != null ? +((t / s.enr[i]) * 100).toFixed(1) : null;
+  });
+
+  // SEQ median of the report year across non-special state schools of the same type.
   const ABENCH = {};
   function annualMedian(type, key, get) {
-    const id = type + "|" + key;
+    const id = type + "|" + key + "|" + repYear();
     if (!(id in ABENCH)) {
       const v = DATA.schools
         .filter((s) => s.type === type && !s.special && annualOf(s))
@@ -458,9 +481,9 @@
     }
     return ABENCH[id];
   }
-  const sosItem = (a, survey, q) => last(((a.sos || {})[survey] || []).find(([x]) => x === q)?.[1]);
+  const sosItem = (a, survey, q) => atYear(a, ((a.sos || {})[survey] || []).find(([x]) => x === q)?.[1]);
   const sdaPer100 = (s, a) => {
-    const e = s.enr[YEARS.indexOf(last(a.years))], t = last(a.sda?.total);
+    const e = s.enr[YEARS.indexOf(repYear())], t = atYear(a, a.sda?.total);
     return e && t != null ? +((t / e) * 100).toFixed(1) : null;
   };
 
@@ -476,20 +499,20 @@
   function surveyCard(s, a, key) {
     const items = (a.sos || {})[key];
     if (!items || !items.length) return "";
-    const ys = a.years;
+    const ys = a.years, ry = repYear(), prev = yearWindow().filter((y) => y !== ry);
     const body = items.map(([q, vals]) => {
-      const v = last(vals), med = s.special ? null : annualMedian(s.type, `sos|${key}|${q}`, (_, x) => sosItem(x, key, q));
+      const v = atYear(a, vals), med = s.special ? null : annualMedian(s.type, `sos|${key}|${q}`, (_, x) => sosItem(x, key, q));
       return `<div class="sos-row">
         <div class="sos-q">${esc(q)}</div>
-        <div class="sos-bar" title="${ys.map((y, k) => `${y}: ${pct(vals[k])}`).join(" · ")}${med != null ? ` · SEQ median ${pct(+med.toFixed(1))}` : ""}">
+        <div class="sos-bar" title="${ys.map((y, k) => (vals[k] == null ? "" : `${y}: ${pct(vals[k])}`)).filter(Boolean).join(" · ")}${med != null ? ` · SEQ median ${pct(+med.toFixed(1))}` : ""}">
           <span style="width:${v ?? 0}%"></span>${med != null ? `<b style="left:${med}%"></b>` : ""}
         </div>
         <div class="sos-v mono">${pct(v)}</div>
-        <div class="sos-prev mono muted">${ys.slice(0, -1).map((y, k) => `${y} ${pct(vals[k])}`).join(" · ")}</div>
+        <div class="sos-prev mono muted">${prev.map((y) => `${y} ${pct(pick(a, vals, [y])[0])}`).join(" · ")}</div>
       </div>`;
     }).join("");
-    return chartCard(SURVEY_LABELS[key], `% agree, ${last(ys)}`, body,
-      s.special ? "" : `Tick: median of SEQ state ${s.type.toLowerCase()} schools.`);
+    return chartCard(SURVEY_LABELS[key], `% agree, ${ry}`, body,
+      [ry === 2020 ? "The surveys weren't run in 2020 (COVID-19)." : "", s.special ? "" : `Tick: median of SEQ state ${s.type.toLowerCase()} schools.`].filter(Boolean).join(" "));
   }
 
   function yearTable(ys, rows, fmtV) {
@@ -497,30 +520,41 @@
       <tbody>${rows.map(([label, vals]) => `<tr><th scope="row">${esc(label)}</th>${vals.map((v) => `<td>${fmtV(v)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
   }
 
-  function reportTab(s) {
+  function reportTab(s, col) {
     if (!ANNUAL) return `<p class="muted small">Loading annual report data…</p>`;
     const a = annualOf(s);
     if (!a) return reportMissing(s);
-    const ys = a.years, yr = last(ys);
+    const yr = repYear(), win = yearWindow();
     const med = (key, get, f) => {
       const m = s.special ? null : annualMedian(s.type, key, get);
       return m != null ? `<div class="cmp">SEQ state ${s.type.toLowerCase()} median ${f(m)}</div>` : "";
     };
+    // Rows with something to show in the window, values cut to it.
+    const winRows = (rows) => rows.map(([label, vals]) => [label, pick(a, vals, win)]).filter(([, v]) => v.some((x) => x != null));
     const sdaNames = { short: "Short suspensions", long: "Long suspensions", excl: "Exclusions", canc: "Cancellations", total: "Total" };
+    const attRows = winRows(a.attYr || []);
+    const sdaRows = winRows(Object.entries(sdaNames).filter(([k]) => a.sda?.[k]).map(([k, n]) => [n, a.sda[k]]));
+    const shown = (a.cls || []).filter(([, vals]) => atYear(a, vals) != null);
+    const r1 = (v) => (+v).toFixed(1).replace(/\.0$/, "");
     return `
-      <p class="muted small" style="margin:0 0 8px">From the school's <a href="${esc(reportUrl(s))}" target="_blank" rel="noopener">${ANNUAL.reportYear} annual report ↗</a> · ${ys[0]}–${yr}</p>
+      <p class="muted small" style="margin:0 0 8px">From the school's annual reports (latest: <a href="${esc(reportUrl(s))}" target="_blank" rel="noopener">${ANNUAL.reportYear} ↗</a>) · <span class="mono">${yr}</span>${repYearNote()}</p>
       <div class="stats">
-        <div class="stat"><div class="k">Attendance ${yr}</div><div class="v">${pct(last(a.att))}</div>${med("att", (_, x) => last(x.att), (v) => pct(Math.round(v)))}</div>
-        <div class="stat"><div class="k">Disciplinary absences per 100 students</div><div class="v">${sdaPer100(s, a) ?? "–"}</div>${med("sda100", sdaPer100, (v) => v.toFixed(1))}</div>
-        ${(a.cls || []).map(([phase, vals]) => `<div class="stat"><div class="k">Average class size, ${esc(phase.replace(/Year /g, "Yr ").replace("Prep Yr", "Prep"))}</div><div class="v">${vals[2] ?? "–"}</div></div>`).join("")}
+        <div class="stat"><div class="k">Attendance ${yr}</div><div class="v">${pct(atYear(a, a.att))}</div>${med("att", (_, x) => atYear(x, x.att), (v) => pct(Math.round(v)))}</div>
+        <div class="stat"><div class="k">Disciplinary absences per 100 students, ${yr}</div><div class="v">${sdaPer100(s, a) ?? "–"}</div>${med("sda100", sdaPer100, (v) => v.toFixed(1))}</div>
+        ${shown.map(([phase, vals]) => `<div class="stat"><div class="k">Average class size, ${esc(phase.replace(/Year /g, "Yr ").replace("Prep Yr", "Prep"))}, ${yr}</div><div class="v">${atYear(a, vals)}</div></div>`).join("")}
       </div>
       ${surveyCard(s, a, "parent")}
       ${surveyCard(s, a, "student")}
       ${surveyCard(s, a, "staff")}
-      ${a.attYr && a.attYr.length ? chartCard("Attendance by year level", "%", yearTable(ys, a.attYr, pct), "Days attended as a share of enrolled school days, full-time students.") : ""}
-      ${a.sda ? chartCard("School disciplinary absences", "count", yearTable(ys, Object.entries(sdaNames).filter(([k]) => a.sda[k]).map(([k, n]) => [n, a.sda[k]]), (v) => (v == null ? "–" : fmt(v))),
-        "Each suspension is counted, so one student can account for several. Per 100 students uses this year's enrolment.") : ""}
-      <p class="note">Source: State of Queensland (Department of Education), school annual reports, CC BY 4.0. The Department notes the reports are an information source only.</p>`;
+      <div class="cards">
+        ${chartCard("Attendance", "%", lineChart({ values: toYears(a, a.att), color: col }), "Overall attendance, every year the school's reports cover.")}
+        ${a.sda ? chartCard("Disciplinary absences", "per 100 students", lineChart({ values: sda100Years(s, a), color: col, fmtV: r1 })) : ""}
+      </div>
+      ${attRows.length ? chartCard("Attendance by year level", "%", yearTable(win, attRows, pct), "Days attended as a share of enrolled school days, full-time students.") : ""}
+      ${sdaRows.length ? chartCard("School disciplinary absences", "count", yearTable(win, sdaRows, (v) => (v == null ? "–" : fmt(v))),
+        "Each suspension is counted, so one student can account for several. Per 100 students uses this year's enrolment." +
+        (win[0] < 2017 ? " Before 2017, short suspensions were 1–5 days and long suspensions 6–20 days (now 1–10 and 11–20)." : "")) : ""}
+      <p class="note">Source: State of Queensland (Department of Education), school annual reports, CC BY 4.0. Each year comes from the newest report that includes it; years a school no longer publishes are blank. The Department notes the reports are an information source only.</p>`;
   }
 
   function compareReport(list) {
@@ -532,21 +566,22 @@
     if (have.length < 2) {
       return skipped + `<p class="small">Annual report data can only be compared between state schools. ${have.length ? `Open <strong>${esc(have[0].name)}</strong> on its own to see its report.` : ""}</p>`;
     }
-    const v = (s, f) => f(annualOf(s));
-    const phases = [...new Set(have.flatMap((s) => (annualOf(s).cls || []).map(([p]) => p)))];
+    const v = (s, f) => f(annualOf(s)), yr = repYear();
+    const phases = [...new Set(have.flatMap((s) => (annualOf(s).cls || []).filter(([, vals]) => atYear(annualOf(s), vals) != null).map(([p]) => p)))];
     const rows = [
-      [`Attendance ${last(annualOf(have[0]).years)}`, (s) => v(s, (a) => pct(last(a.att)))],
-      ...phases.map((p) => [`Class size, ${esc(p.replace(/Year /g, "Yr "))}`, (s) => v(s, (a) => last((a.cls || []).find(([x]) => x === p)?.[1]) ?? "–")]),
-      ["Disciplinary absences", (s) => v(s, (a) => fmt(last(a.sda?.total)))],
+      [`Attendance ${yr}`, (s) => v(s, (a) => pct(atYear(a, a.att)))],
+      ...phases.map((p) => [`Class size, ${esc(p.replace(/Year /g, "Yr "))}`, (s) => v(s, (a) => atYear(a, (a.cls || []).find(([x]) => x === p)?.[1]) ?? "–")]),
+      [`Disciplinary absences ${yr}`, (s) => v(s, (a) => fmt(atYear(a, a.sda?.total)))],
       ["… per 100 students", (s) => v(s, (a) => sdaPer100(s, a) ?? "–")],
     ];
     const surveys = Object.keys(SURVEY_LABELS).map((key) => {
       const qs = [...new Set(have.flatMap((s) => ((annualOf(s).sos || {})[key] || []).map(([q]) => q)))];
       if (!qs.length) return "";
-      return chartCard(SURVEY_LABELS[key], "% agree", cmpTable(have, qs.map((q) => [esc(q), (s) => pct(sosItem(annualOf(s), key, q))])));
+      return chartCard(SURVEY_LABELS[key], `% agree, ${yr}`, cmpTable(have, qs.map((q) => [esc(q), (s) => pct(sosItem(annualOf(s), key, q))])));
     }).join("");
-    return `${skipped}${cmpTable(have, rows)}${surveys}
-      <p class="note">Latest year from each school's ${ANNUAL.reportYear} annual report. Source: State of Queensland (Department of Education), CC BY 4.0.</p>`;
+    return `<p class="muted small" style="margin:0 0 8px"><span class="mono">${yr}</span>${repYearNote()}</p>
+      ${skipped}${cmpTable(have, rows)}${surveys}
+      <p class="note">From each school's annual reports, which cover ${ANNUAL.years[0]}–${last(ANNUAL.years)} where the school still publishes them. Disciplinary absences count suspensions and exclusions in that one year, not students: one student suspended three times counts three. Compare the per 100 students row, since raw counts grow with school size. Source: State of Queensland (Department of Education), CC BY 4.0.</p>`;
   }
 
   /* ---------------- comparison (2–4 schools side by side) ---------------- */
@@ -566,19 +601,21 @@
 
   function compareOverview(list, i) {
     const r1 = (v) => (v == null ? "–" : (+v).toFixed(1));
+    const r0 = (v) => fmt(Math.round(v));
+    const med = (s, key, f) => benchLine(s, key, i, f, true);
     return cmpTable(list, [
       ["Sector", (s) => esc(s.sector)],
       ["Type", (s) => esc(s.type) + (s.special ? " (special)" : "")],
       ["Year levels", (s) => esc(s.yr || "–")],
       ["Suburb", (s) => esc(s.suburb)],
-      ["Students", (s) => fmt(s.enr[i])],
-      [ICSEA, (s) => fmt(s.icsea[i])],
-      [`${ICSEA} percentile`, (s) => (s.pct[i] == null ? "–" : s.pct[i] + "th")],
-      ["Teachers (FTE)", (s) => r1(s.tfte[i])],
-      ["Students per teacher", (s) => r1(s.ratio[i])],
-      ["Non-teaching staff (FTE)", (s) => r1(s.nfte[i])],
+      ["Students", (s) => fmt(s.enr[i]) + med(s, "enr", r0)],
+      [ICSEA, (s) => fmt(s.icsea[i]) + med(s, "icsea", r0)],
+      [`${ICSEA} percentile`, (s) => (s.pct[i] == null ? "–" : s.pct[i] + "th") + med(s, "pct", (v) => Math.round(v) + "th")],
+      ["Teachers (FTE)", (s) => r1(s.tfte[i]) + med(s, "tfte", r1)],
+      ["Students per teacher", (s) => r1(s.ratio[i]) + med(s, "ratio", r1)],
+      ["Non-teaching staff (FTE)", (s) => r1(s.nfte[i]) + med(s, "nfte", r1)],
       ["My School", (s) => `<a href="https://www.myschool.edu.au/school/${s.id}" target="_blank" rel="noopener">Profile ↗</a>`],
-    ]);
+    ]) + `<p class="note">Grey figures: median of SEQ schools of the same type (primary, secondary or combined) that year, excluding special schools.</p>`;
   }
 
   function compareStudents(list, i) {
@@ -614,15 +651,15 @@
     const note = type ? `Dashed line: median of SEQ ${type.toLowerCase()} schools; shaded band: the middle half.` : "";
     const card = (title, unit, key, fmtV, extra) =>
       chartCard(title, unit, lineChart({ series: series(key), bench: bench(key), fmtV }) + legend, [extra, note].filter(Boolean).join(" "));
-    return [
+    return `<div class="cards">${[
       card("Students", "enrolments", "enr"),
       card("Students per teacher", "ratio", "ratio", r1, "Enrolments divided by teaching staff (FTE). Descriptive, not a quality measure."),
       card("Teachers", "FTE", "tfte", r1),
       card("Non-teaching staff", "FTE", "nfte", r1),
-      card(ICSEA, "index", "icsea", fmt, "Index of Community Socio-Educational Advantage. The national average is 1000."),
+      card(ICSEA, "index", "icsea", fmt, "Index of Community Socio-Educational Advantage. The national average is 1000. Higher means a more advantaged intake, not a better school."),
       card("Language other than English", "%", "lbote"),
       card("Indigenous students", "%", "ind"),
-    ].join("");
+    ].join("")}</div>`;
   }
 
   function compareNaplan(list) {
@@ -634,6 +671,115 @@
           <a href="https://www.myschool.edu.au/school/${s.id}/naplan" target="_blank" rel="noopener">Student progress <span>↗</span></a>
         </div>`).join("")}
       <p class="note">My School's terms of use don't allow its content to be reposted on another public website, so the results aren't copied into this map.</p>`;
+  }
+
+  /* ---------------- Context tab: each measure among schools with a similar intake ---------------- */
+  // A school's peers are non-special SEQ schools of the same type whose ICSEA is within ICSEA_NEAR of its own,
+  // across all sectors (the same idea as My School's "similar schools"). Position is the percentile within those
+  // peers. This is deliberately not a composite score: the research doesn't support combining these measures.
+  const ICSEA_NEAR = 50, MIN_PEERS = 10;
+  const sosMean = (a, key) => {
+    const v = ((a.sos || {})[key] || []).map(([, vals]) => atYear(a, vals)).filter((x) => x != null);
+    return v.length ? +(v.reduce((p, q) => p + q, 0) / v.length).toFixed(1) : null;
+  };
+  const dp1 = (v) => (+v).toFixed(1);
+  const EVIDENCE = { strong: "Strong evidence", moderate: "Moderate evidence", modest: "Modest evidence", none: "Descriptive only" };
+  // `annual` measures come from state school annual reports, so only state schools are placed and compared.
+  const CONTEXT = [
+    { title: "Attendance", unit: "%", annual: true, ev: "strong", f: (v) => pct(+v.toFixed(1)),
+      get: (s) => atYear(annualOf(s), annualOf(s).att),
+      note: "Each day missed is linked to lower NAPLAN results, with no \"safe\" level of absence (Hancock et al., 2013). Attendance also reflects family circumstances, which is why it's set against similar-intake schools." },
+    { title: "Parent opinion", unit: "avg % agree", annual: true, ev: "moderate", f: pct,
+      get: (s) => sosMean(annualOf(s), "parent"),
+      note: "The average across the 15 parent survey items (safety, teaching, progress, communication). A positive school climate is linked to better achievement and wellbeing (Thapa et al., 2013). Self-reported, and response rates vary." },
+    { title: "Student opinion", unit: "avg % agree", annual: true, ev: "moderate", f: pct,
+      get: (s) => sosMean(annualOf(s), "student"),
+      note: "The average across the 12 student survey items. Students' sense of safety, fairness and connection is part of school climate (Thapa et al., 2013). Only some year levels are surveyed." },
+    { title: "Staff opinion", unit: "avg % agree", annual: true, ev: "moderate", f: pct,
+      get: (s) => sosMean(annualOf(s), "staff"),
+      note: "The average across the 11 staff survey items. Teachers' views of their working conditions predict whether they stay (Ladd, 2011), and teacher turnover lowers achievement (Ronfeldt, Loeb & Wyckoff, 2013)." },
+    { title: "Disciplinary absences", unit: "per 100 students", annual: true, ev: "moderate", f: dp1,
+      get: (s) => sdaPer100(s, annualOf(s)),
+      note: "Suspensions and exclusions per 100 students. Suspension is associated with lower achievement and disengagement (Noltemeyer, Ward & Mcloughlin, 2015). Rates reflect a school's behaviour policy as well as student behaviour, so a low rate isn't automatically better." },
+    { title: "Students per teacher", unit: "ratio", ev: "modest", f: dp1,
+      get: (s, i) => s.ratio[i],
+      note: "Smaller classes help most in the first years of school and for disadvantaged students (Krueger, 1999, Tennessee STAR). Across studies the effect is modest (Hattie, 2009). This counts all teaching staff, so actual classes are larger." },
+    { title: "Non-teaching staff", unit: "per 100 students", ev: "none", f: dp1,
+      get: (s, i) => (s.nfte[i] != null && s.enr[i] ? (s.nfte[i] / s.enr[i]) * 100 : null),
+      note: "Administration, teacher aides and specialist support staff (FTE). There's no consistent research link between this figure on its own and student outcomes." },
+    { title: "Students", unit: "enrolments", ev: "none", f: (v) => fmt(Math.round(v)),
+      get: (s, i) => s.enr[i],
+      note: "Research on school size is mixed; smaller schools tend to suit disadvantaged students (Leithwood & Jantzi, 2009). Size tells you more about how a school feels than how good it is." },
+  ];
+  const CONTEXT_REFS = [
+    "Hancock, K. J. et al. (2013). <em>Student attendance and educational outcomes: Every day counts.</em> Telethon Institute for Child Health Research.",
+    "Hattie, J. (2009). <em>Visible Learning.</em> Routledge.",
+    "Krueger, A. B. (1999). Experimental estimates of education production functions. <em>Quarterly Journal of Economics</em>, 114(2).",
+    "Ladd, H. F. (2011). Teachers' perceptions of their working conditions. <em>Educational Evaluation and Policy Analysis</em>, 33(2).",
+    "Leithwood, K. & Jantzi, D. (2009). A review of empirical evidence about school size effects. <em>Review of Educational Research</em>, 79(1).",
+    "Noltemeyer, A. L., Ward, R. M. & Mcloughlin, C. (2015). Relationship between school suspension and student outcomes: A meta-analysis. <em>School Psychology Review</em>, 44(2).",
+    "OECD (2008). <em>Measuring Improvements in Learning Outcomes: Best Practices to Assess the Value-Added of Schools.</em>",
+    "Ronfeldt, M., Loeb, S. & Wyckoff, J. (2013). How teacher turnover harms student achievement. <em>American Educational Research Journal</em>, 50(1).",
+    "Thapa, A. et al. (2013). A review of school climate research. <em>Review of Educational Research</em>, 83(3).",
+  ];
+
+  // {v, n, med, p25, p75, pos} for one school and measure, or {why} when it can't be placed.
+  function placeAmongPeers(s, m, i) {
+    if (s.special) return { why: "Special school, not compared" };
+    if (m.annual && !annualOf(s)) return { why: s.sector === "Government" ? "No annual report found" : "State schools only" };
+    const x = s.icsea[i], v = m.get(s, i);
+    if (x == null) return { why: `No ${ICSEA} for this year` };
+    if (v == null) return { why: "Not reported" };
+    const peers = DATA.schools
+      .filter((p) => p.type === s.type && !p.special && p.icsea[i] != null && Math.abs(p.icsea[i] - x) <= ICSEA_NEAR && (!m.annual || annualOf(p)))
+      .map((p) => m.get(p, i)).filter((y) => y != null).sort((a, b) => a - b);
+    if (peers.length < MIN_PEERS) return { v, why: `Only ${peers.length} similar schools` };
+    const below = peers.filter((y) => y < v).length, same = peers.filter((y) => y === v).length;
+    return { v, n: peers.length, med: quantile(peers, 0.5), p25: quantile(peers, 0.25), p75: quantile(peers, 0.75),
+      pos: Math.round(((below + same / 2) / peers.length) * 100) };
+  }
+
+  // One card per measure: a 0–100 percentile strip with a dot per school, then each school's figures.
+  function contextCard(m, list, colors, i) {
+    const places = list.map((s) => placeAmongPeers(s, m, i));
+    const dots = places.map((p, k) => (p.pos == null ? "" :
+      `<b style="left:${p.pos}%;background:${colors[k]}" title="${esc(list[k].name)}: higher than ${p.pos}% of similar schools"></b>`)).join("");
+    const rows = places.map((p, k) => `<div class="ctx-row">
+        ${list.length > 1 ? `<i style="background:${colors[k]}"></i><span class="ctx-name">${esc(shortName(list[k]))}</span>` : ""}
+        <span class="ctx-v">${p.v != null ? m.f(p.v) : "–"}</span>
+        <span class="muted">${p.pos != null ? `higher than ${p.pos}% of ${p.n} similar schools · their median ${m.f(p.med)}` : esc(p.why)}</span>
+      </div>`).join("");
+    const yr = m.annual ? repYear() : YEARS[i];
+    return `<div class="card ctx">
+      <div class="card-head"><h4>${m.title} <span class="ctx-ev" data-ev="${m.ev}">${EVIDENCE[m.ev]}</span></h4><span class="mono muted">${m.unit} · ${yr}</span></div>
+      ${places.some((p) => p.pos != null) ? `<div class="ctx-strip"><span class="ctx-mid"></span>${dots}</div>
+        <div class="ctx-axis mono muted"><span>Lowest</span><span>Middle half</span><span>Highest</span></div>` : ""}
+      ${rows}
+      <p class="note">${m.note}</p>
+    </div>`;
+  }
+
+  function contextTab(list, colors) {
+    const i = state.yearIdx;
+    if (!ANNUAL) return `<p class="muted small">Loading annual report data…</p>`;
+    const ai = YEARS.indexOf(repYear()), idx = (m) => (m.annual && ai >= 0 ? ai : i);
+    const one = list.length === 1, s = list[0];
+    const intro = one
+      ? (s.special || s.icsea[i] == null
+        ? `<p class="small" style="margin-top:0">${s.special ? "Special schools serve very different needs, so they aren't placed against other schools." : `${esc(s.name)} has no ${ICSEA} for ${YEARS[i]}, so similar schools can't be found.`}</p>`
+        : `<p class="small" style="margin-top:0">Each measure places ${esc(s.name)} among SEQ ${s.type.toLowerCase()} schools with a similar intake: ${ICSEA} within ±${ICSEA_NEAR} of its ${fmt(s.icsea[i])}, all sectors.</p>`)
+      : `<p class="small" style="margin-top:0">Each school is placed among SEQ schools of its own type with a similar intake (${ICSEA} within ±${ICSEA_NEAR} of its own), so a dot further right means higher than its own peers, not higher than the other schools here.</p>`;
+    return `${intro}
+      <p class="note" style="margin:0 0 10px">This is context, not a ranking. None of these figures measures teaching quality directly, and there's no research basis for combining them into one score: league tables mostly reflect intake, and ranks overlap once uncertainty is counted (Goldstein &amp; Spiegelhalter, 1996).</p>
+      <div class="card ctx">
+        <div class="card-head"><h4>Learning progress <span class="ctx-ev" data-ev="strong">Strongest measure</span></h4><span class="mono muted">My School</span></div>
+        <p class="small" style="margin:0">NAPLAN gain compared with students who had similar earlier scores and backgrounds is a value-added measure, the approach researchers recommend for judging schools (OECD, 2008). It's published on My School and can't be copied here.</p>
+        <div class="links" style="margin-top:8px">${list.map((x, k) => `<a href="https://www.myschool.edu.au/school/${x.id}/naplan" target="_blank" rel="noopener">${one ? "Student progress" : `<span class="ctx-name"><i style="background:${colors[k]}"></i>${esc(shortName(x))}</span>`} <span>vs similar students ↗</span></a>`).join("")}</div>
+      </div>
+      ${CONTEXT.map((m) => contextCard(m, list, colors, idx(m))).join("")}
+      <details class="ctx-refs"><summary>References</summary><ul>${[
+        "Goldstein, H. &amp; Spiegelhalter, D. J. (1996). League tables and their limitations. <em>Journal of the Royal Statistical Society A</em>, 159(3).",
+        ...CONTEXT_REFS].sort().map((r) => `<li>${r}</li>`).join("")}</ul></details>`;
   }
 
   function pickerHtml() {
@@ -709,8 +855,8 @@
     const list = compared(), many = list.length > 1;
 
     const body = many
-      ? { overview: () => compareOverview(list, i), students: () => compareStudents(list, i), trends: () => compareTrends(list), report: () => compareReport(list), naplan: () => compareNaplan(list) }[state.tab]()
-      : { overview: () => overviewTab(s, i, col), students: () => studentsTab(s, i), trends: () => trendsTab(s, col), report: () => reportTab(s), naplan: () => naplanTab(s) }[state.tab]();
+      ? { overview: () => compareOverview(list, i), students: () => compareStudents(list, i), trends: () => compareTrends(list), report: () => compareReport(list), context: () => contextTab(list, list.map((_, k) => cmpColor(k))), naplan: () => compareNaplan(list) }[state.tab]()
+      : { overview: () => overviewTab(s, i, col), students: () => studentsTab(s, i), trends: () => trendsTab(s, col), report: () => reportTab(s, col), context: () => contextTab([s], [col]), naplan: () => naplanTab(s) }[state.tab]();
     const missing = list.filter((x) => x.enr[i] == null).length;
     const missingNote = !missing ? "" : many ? ` · ${missing === 1 ? "one school" : missing + " schools"} didn't report this year` : " · no data reported this year";
 
@@ -739,7 +885,7 @@
     if (add) add.onclick = () => { state.picking = true; renderDetail(); };
     if (state.picking) setupPicker();
     const sc = $("show-catchment");
-    if (sc) sc.onclick = (e) => { e.preventDefault(); fitCatchment(s); };
+    if (sc) sc.onclick = (e) => { e.preventDefault(); showCatchmentOf(s); };
   }
 
   // Map clicks and search picks land here: while picking they join the comparison, otherwise they select.
@@ -768,15 +914,12 @@
   }
 
   /* ---------------- catchments ---------------- */
-  // With no school selected, state.catchMode picks one level to draw over the whole region ("" for none).
-  // With a school selected the control is hidden and the map shows that school's own catchment plus the
-  // state school (primary) and state high school (junior) catchments around it; state.catchMode is kept
-  // and comes back on deselect.
+  // state.catchMode is the level switched on ("" for off). With no school selected it's drawn over the
+  // whole region; with a school selected, only the selected (and compared) schools' own catchments.
   const CATCH_LEVELS = ["primary", "junior", "senior"];
   const CATCH_NAMES = { primary: "primary", junior: "junior secondary", senior: "senior secondary" };
-  const NEAR_METRES = 5000; // how far around a selected school to draw neighbouring catchments
   const catchCache = {}, catchData = {};
-  let catchLayer = null, catchRenderer = null, catchOwn = new Set(), catchHits = new Set(), catchToken = 0;
+  let catchLayer = null, catchRenderer = null, catchToken = 0;
 
   function loadCatch(key) {
     catchCache[key] = catchCache[key] || fetch(`data/catchments-${key}.geojson`)
@@ -786,84 +929,42 @@
     return catchCache[key];
   }
   const ownFeatures = (key, id) => (catchData[key] ? catchData[key].features.filter((f) => f.properties.id === id) : []);
-  const bbox = (f) => (f._bb = f._bb || L.geoJSON(f).getBounds());
   const schoolById = (id) => DATA.schools.find((x) => x.id === id);
-
-  // Even-odd ray cast over every ring, so holes are respected. pt is [lng, lat].
-  function inGeometry(pt, geom) {
-    const polys = geom.type === "Polygon" ? [geom.coordinates] : geom.type === "MultiPolygon" ? geom.coordinates : [];
-    return polys.some((rings) => {
-      let inside = false;
-      for (const ring of rings) {
-        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-          const [xi, yi] = ring[i], [xj, yj] = ring[j];
-          if (yi > pt[1] !== yj > pt[1] && pt[0] < ((xj - xi) * (pt[1] - yi)) / (yj - yi) + xi) inside = !inside;
-        }
-      }
-      return inside;
-    });
-  }
-  function containing(key, s) {
-    return catchData[key].features.filter((f) => bbox(f).contains([s.lat, s.lng]) && inGeometry([s.lng, s.lat], f.geometry));
-  }
-
-  // Levels drawn around selected schools, bottom first: high school under state school, plus senior
-  // when a selected school's only catchment is a senior one.
-  async function nearLevels(schools) {
-    await Promise.all(["primary", "junior"].map(loadCatch));
-    const seniorOnly = schools.some((s) => s.sector === "Government" && !s.special &&
-      !ownFeatures("primary", s.id).length && !ownFeatures("junior", s.id).length);
-    if (!seniorOnly) return ["junior", "primary"];
-    await loadCatch("senior");
-    return schools.some((s) => ownFeatures("senior", s.id).length) ? ["senior", "junior", "primary"] : ["junior", "primary"];
-  }
-  function nearFeatures(levels, schools) {
-    const area = L.latLngBounds([]);
-    schools.forEach((s) => {
-      area.extend(L.latLng(s.lat, s.lng).toBounds(NEAR_METRES));
-      levels.forEach((k) => ownFeatures(k, s.id).forEach((f) => area.extend(bbox(f))));
-    });
-    return levels.flatMap((k) => catchData[k].features.filter((f) => area.intersects(bbox(f))));
-  }
 
   function catchStyle(f) {
     const dark = isDark();
     const gov = cssVar("--gov"), line = dark ? "#e3cfd4" : "#6b1a33";
-    const dash = f._lvl === "primary" ? null : "6 4";
-    if (catchOwn.has(f)) return { color: gov, weight: 3, opacity: 1, dashArray: dash, fillColor: gov, fillOpacity: 0.16 };
-    if (catchHits.has(f)) return { color: gov, weight: 2, opacity: 0.9, dashArray: dash, fillColor: gov, fillOpacity: 0.05 };
-    return { color: line, weight: 1, opacity: dark ? 0.55 : 0.6, dashArray: dash, fillColor: line, fillOpacity: 0.03 };
+    return inView(f.properties.id)
+      ? { color: gov, weight: 3, opacity: 1, fillColor: gov, fillOpacity: 0.16 }
+      : { color: line, weight: 1, opacity: dark ? 0.55 : 0.6, fillColor: line, fillOpacity: 0.03 };
   }
 
   // Bring the map, the control and the note in line with state.catchMode and the selection.
   async function syncCatchments() {
     const token = ++catchToken, mode = state.catchMode;
     const schools = state.selected == null ? [] : compared();
-    const near = schools.length > 0;
-    $("catch-by").hidden = near;
     document.querySelectorAll("#catch-by button").forEach((b) => b.classList.toggle("on", b.dataset.v === mode));
-    let levels = mode ? [mode] : [];
     try {
-      if (near || levels.some((k) => !catchData[k])) $("catch-status").textContent = "loading…";
-      levels = near ? await nearLevels(schools) : levels;
-      await Promise.all(levels.map(loadCatch));
+      if (mode && !catchData[mode]) $("catch-status").textContent = "loading…";
+      if (mode) await loadCatch(mode);
     } catch (err) {
       if (token === catchToken) $("catch-status").textContent = "failed to load";
       return;
     }
     if (token !== catchToken) return; // changed again while loading
 
-    const sig = near ? "near:" + schools.map((s) => s.id).join(",") : levels.join(",");
+    const sig = !mode ? "" : schools.length ? `${mode}:${schools.map((s) => s.id).join(",")}` : mode;
     if (sig !== state.catch || (sig && !catchLayer)) {
       if (catchLayer) { map.removeLayer(catchLayer); catchLayer = null; }
       if (sig) {
         catchRenderer = catchRenderer || L.canvas({ padding: 0.5 });
-        catchLayer = L.geoJSON(near ? nearFeatures(levels, schools) : catchData[levels[0]], {
+        const features = schools.length ? schools.flatMap((s) => ownFeatures(mode, s.id)) : catchData[mode].features;
+        catchLayer = L.geoJSON({ type: "FeatureCollection", features }, {
           renderer: catchRenderer,
           style: catchStyle,
           onEachFeature: (f, layer) => {
-            layer.bindTooltip(`<strong>${esc(f.properties.name)}</strong><br><span class="muted">${CATCH_NAMES[f._lvl]} catchment · click to open</span>`, { sticky: true });
-            layer.on("mouseover", () => layer.setStyle({ weight: 2.5, fillOpacity: 0.1 }));
+            layer.bindTooltip(`<strong>${esc(f.properties.name)}</strong><br><span class="muted">${CATCH_NAMES[mode]} catchment${schools.length ? "" : " · click to open"}</span>`, { sticky: true });
+            layer.on("mouseover", () => layer.setStyle({ weight: 3, fillOpacity: 0.12 }));
             layer.on("mouseout", () => catchLayer && catchLayer.resetStyle(layer));
             layer.on("click", () => f.properties.id && choose(f.properties.id, false));
           },
@@ -872,30 +973,24 @@
       }
     }
     state.catch = sig;
-
-    catchOwn = new Set(schools.flatMap((s) => levels.flatMap((k) => ownFeatures(k, s.id))));
-    catchHits = new Set(schools.flatMap((s) => levels.flatMap((k) => containing(k, s))));
     restyleCatchments();
-    $("catch-status").textContent = near ? "selected" : mode ? "on" : "off";
-    $("catch-note").innerHTML = catchNote(levels, schools);
+    $("catch-status").textContent = mode ? "on" : "off";
+    $("catch-note").innerHTML = catchNote(mode, schools);
   }
 
-  function catchNote(levels, schools) {
-    if (!schools.length) return "";
-    const legend = `<br><span class="muted">Solid outlines: state school catchments. Dashed: state high school catchments.</span>`;
-    if (schools.length > 1) return `Showing the catchments of and around the ${schools.length} compared schools.${legend}`;
+  function catchNote(mode, schools) {
+    if (!mode || !schools.length) return "";
+    const has = schools.filter((s) => ownFeatures(mode, s.id).length);
+    if (schools.length > 1) {
+      return has.length ? `Showing the ${CATCH_NAMES[mode]} catchments of ${has.length} of the ${schools.length} compared schools.`
+        : `None of the compared schools has a ${CATCH_NAMES[mode]} catchment.`;
+    }
     const s = schools[0];
-    const own = levels.filter((k) => ownFeatures(k, s.id).length).reverse();
-    const lead = own.length
-      ? `Showing <strong>${esc(s.name)}</strong>'s ${own.map((k) => CATCH_NAMES[k]).join(" and ")} catchment.`
-      : s.sector === "Government"
-        ? `${esc(s.name)} doesn't have its own catchment.`
-        : `${esc(s.sector)} schools don't have catchments.`;
-    const inside = levels.filter((k) => !own.includes(k)).reverse().map((k) => {
-      const names = containing(k, s).map((f) => `<strong>${esc(f.properties.name)}</strong>`);
-      return names.length ? `the ${names.join(" and ")} ${CATCH_NAMES[k]}` : "";
-    }).filter(Boolean);
-    return lead + (inside.length ? ` It's inside ${inside.join(" and ")} catchment${inside.length > 1 ? "s" : ""}.` : "") + legend;
+    if (has.length) return `Showing <strong>${esc(s.name)}</strong>'s ${CATCH_NAMES[mode]} catchment.`;
+    if (s.sector !== "Government") return `${esc(s.sector)} schools don't have catchments.`;
+    const other = CATCH_LEVELS.filter((k) => k !== mode && ownFeatures(k, s.id).length);
+    return `${esc(s.name)} has no ${CATCH_NAMES[mode]} catchment.` +
+      (other.length ? ` Try ${other.map((k) => `<a href="#" data-catch="${k}">${CATCH_NAMES[k]}</a>`).join(" or ")}.` : "");
   }
 
   function setCatchMode(mode) {
@@ -913,6 +1008,20 @@
     const own = catchLayer ? catchLayer.getLayers().filter((l) => l.feature.properties.id === s.id) : [];
     if (own.length) map.flyToBounds(L.featureGroup(own).getBounds(), { padding: [40, 40], duration: 0.8 });
     return own.length > 0;
+  }
+
+  // "Show catchment on map": switch on a level the school has a catchment at (the current one if it
+  // can), then frame it.
+  async function showCatchmentOf(s) {
+    const order = [state.catchMode, CATCH_FOR_TYPE[s.type] || "primary", ...CATCH_LEVELS].filter(Boolean);
+    for (const k of order) {
+      try { await loadCatch(k); } catch (err) { continue; }
+      if (ownFeatures(k, s.id).length) {
+        if (state.catchMode !== k) await setCatchMode(k);
+        fitCatchment(s);
+        return;
+      }
+    }
   }
 
   function select(id, fly = true) {
@@ -1064,7 +1173,13 @@
 
     $("catch-by").addEventListener("click", (e) => {
       const b = e.target.closest("button");
-      if (b) setCatchMode(b.dataset.v === state.catchMode ? "" : b.dataset.v); // click again to hide
+      if (b) setCatchMode(b.dataset.v);
+    });
+    $("catch-note").addEventListener("click", (e) => {
+      const a = e.target.closest("[data-catch]");
+      if (!a) return;
+      e.preventDefault();
+      setCatchMode(a.dataset.catch).then(() => fitCatchment(schoolById(state.selected)));
     });
 
     $("opt-special").addEventListener("change", (e) => { state.special = e.target.checked; render(); });
@@ -1103,9 +1218,17 @@
     .then((r) => (r.ok ? r.json() : null))
     .then((d) => {
       ANNUAL = d || { reportYear: null, schools: {} };
+      // Older builds kept `years` and [question, values] pairs on each school; leave those as they are.
+      ANNUAL.years = ANNUAL.years || Object.values(ANNUAL.schools)[0]?.years || [];
+      if (ANNUAL.items) Object.values(ANNUAL.schools).forEach((a) => {
+        a.years = ANNUAL.years;
+        Object.entries(a.sos || {}).forEach(([k, vals]) => {
+          a.sos[k] = ANNUAL.items[k].map((q, j) => [q, vals[j]]).filter(([, v]) => v);
+        });
+      });
       if (DATA && state.selected != null) renderDetail();
     })
-    .catch(() => { ANNUAL = { reportYear: null, schools: {} }; });
+    .catch(() => { ANNUAL = { reportYear: null, schools: {}, years: [] }; });
 
   fetch("data/schools.json")
     .then((r) => r.json())
