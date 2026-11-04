@@ -313,10 +313,20 @@ def survey_label(key, label):
     return SURVEY_SIGS[key].get(sig(label))
 
 
+PHASE = re.compile(r"(?:Prep|Year \d+) – Year \d+")
+
+
 def phase(label):
-    """'Year 4 - Year 7 Primary' -> 'Year 4 – Year 7'; 'Year 7 Secondary – Year 10' -> 'Year 7 – Year 10'."""
-    label = re.sub(r"\s*[-–]\s*", " – ", label)
-    return re.sub(r" (?:Primary|Secondary)\b", "", label)
+    """'Year 4 - Year 7 Primary' -> 'Year 4 – Year 7'; 'Year 7 Secondary – Year 10' -> 'Year 7 – Year 10'.
+
+    Phases a school doesn't teach have no values, so their labels run into the next one
+    ('Prep – Year 3 Year 4 – Year 7 Year 8 – Year 10'): the values belong to the last.
+    Anything that isn't made only of phases (another table caught by mistake) gives None.
+    """
+    label = re.sub(r"\s*[-–±]\s*", " – ", label)
+    label = re.sub(r" (?:Primary|Secondary)\b", "", label)
+    found = PHASE.findall(label)
+    return found[-1] if found and not PHASE.sub("", label).strip() else None
 
 
 ATT_OVERALL = re.compile(r"^(?:The )?overall attendance rate\*? for (?:the )?students", re.I)
@@ -343,8 +353,8 @@ def parse(pdf):
     att = labelled_row(lines, ATT_OVERALL)
     if att:
         rec["att"] = att
-    rec["attYr"] = {("Prep Year" if y == "Prep" else y): v for y, v in table(lines, ATT_LEVELS) if y.startswith(("Prep", "Year"))}
-    rec["cls"] = {phase(y): v for y, v in table(lines, CLASS) if y.startswith(("Prep", "Year")) and any(x is not None for x in v.values())}
+    rec["attYr"] = {("Prep Year" if y == "Prep" else y): v for y, v in table(lines, ATT_LEVELS) if re.fullmatch(r"Prep(?: Year)?|Year \d+", y)}
+    rec["cls"] = {phase(y): v for y, v in table(lines, CLASS) if phase(y) and any(x is not None for x in v.values())}
     sda = {}
     for lbl, v in table(lines, SDA):
         key = next((k for prefix, k in SDA_KEYS if lbl.lower().startswith(prefix)), None)
