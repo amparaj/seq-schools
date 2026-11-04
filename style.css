@@ -129,6 +129,7 @@ abbr[title] { text-decoration: underline dotted; text-underline-offset: 2px; cur
   padding: 8px 10px; border-radius: 8px; cursor: pointer; color: var(--fg);
 }
 .search-results li.active, .search-results li:hover { background: var(--bg-soft); }
+.search-results li.off { opacity: .5; cursor: not-allowed; }
 .search-results .sub { color: var(--fg-muted); font-size: 12px; }
 
 .chips { display: flex; gap: 6px; margin-left: auto; }
@@ -262,6 +263,7 @@ abbr[title] { text-decoration: underline dotted; text-underline-offset: 2px; cur
 .school-icon { background: none; border: 0; }
 .school-icon svg { display: block; overflow: visible; filter: drop-shadow(0 1px 1.5px rgba(0,0,0,.35)); }
 .school-icon.sel svg { filter: drop-shadow(0 0 0 var(--accent)) drop-shadow(0 0 5px var(--accent)); }
+.school-icon.dim { opacity: .25; }
 
 .cluster {
   display: grid; place-items: center;

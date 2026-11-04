@@ -33,6 +33,7 @@
     selected: null,
     compare: [], // further school ids shown alongside `selected`
     picking: false, // while true, map clicks and search add to the comparison
+    pickNote: "", // why the last pick was refused
     tab: "overview",
     catchMode: "", // level drawn when no school is selected: "", "primary", "junior" or "senior"
     catch: "", // the catchment layer on the map now ("" for none)
@@ -161,7 +162,7 @@
       const fill = colorFor(s, { sectorColor: sectorColors[s.sector] });
       const icon = L.divIcon({
         html: shapeSvg(sec.shape, size, fill, !active),
-        className: "school-icon" + (inView(s.id) ? " sel" : ""),
+        className: "school-icon" + (inView(s.id) ? " sel" : state.picking && !canCompare(s) ? " dim" : ""),
         iconSize: [size, size],
       });
       const m = L.marker([s.lat, s.lng], { icon, keyboard: false, riseOnHover: true, zIndexOffset: s.enr[state.yearIdx] || 0 });
@@ -590,6 +591,15 @@
   /* ---------------- comparison (2–4 schools side by side) ---------------- */
   const inView = (id) => id === state.selected || state.compare.includes(id);
   const compared = () => [state.selected, ...state.compare].map((id) => DATA.schools.find((x) => x.id === id)).filter(Boolean);
+
+  // Schools are compared only where they teach the same age group: a Combined school counts as both
+  // primary and secondary, so it can sit with either, but Primary and Secondary never mix.
+  const STAGES = { Primary: ["primary"], Secondary: ["secondary"], Combined: ["primary", "secondary"] };
+  const sharedStages = (list) => ["primary", "secondary"].filter((st) => list.every((s) => (STAGES[s.type] || []).includes(st)));
+  const canCompare = (s) => state.selected == null || sharedStages([...compared(), s]).length > 0;
+  const stageHint = (stages) => stages.length === 1
+    ? `${stages[0] === "primary" ? "Primary" : "Secondary"} and Combined schools`
+    : "Schools that share a primary or secondary year level";
   const shortName = (s) => s.name
     .replace(/ State High School$/, " SHS").replace(/ State School$/, " SS")
     .replace(/ State College$/, " SC").replace(/ Primary School$/, " PS");
@@ -792,17 +802,19 @@
         <button id="cmp-done" class="btn-ghost">Done</button>
       </div>
       <ul id="cmp-results" class="search-results" role="listbox" hidden></ul>
+      <p class="note">${state.pickNote ? `<strong>${esc(state.pickNote)}</strong> ` : ""}Comparable: ${stageHint(sharedStages(compared()))}.</p>
     </div>`;
   }
+  const stopPicking = () => { state.picking = false; state.pickNote = ""; render(); };
 
   function setupPicker() {
     const input = $("cmp-search"), list = $("cmp-results");
-    $("cmp-done").onclick = () => { state.picking = false; renderDetail(); };
+    $("cmp-done").onclick = stopPicking;
     let hits = [], active = 0;
     const draw = () => {
       list.hidden = !hits.length;
-      list.innerHTML = hits.map((s, k) => `<li role="option" data-id="${s.id}" class="${k === active ? "active" : ""}">
-        ${glyph(sectorOf(s.sector), 14)}<div><div>${esc(s.name)}</div><div class="sub">${esc(s.suburb)} ${esc(s.postcode)} · ${esc(s.type)}</div></div></li>`).join("");
+      list.innerHTML = hits.map((s, k) => `<li role="option" data-id="${s.id}" class="${k === active ? "active" : ""}${canCompare(s) ? "" : " off"}" aria-disabled="${!canCompare(s)}">
+        ${glyph(sectorOf(s.sector), 14)}<div><div>${esc(s.name)}</div><div class="sub">${esc(s.suburb)} ${esc(s.postcode)} · ${esc(s.type)}${canCompare(s) ? "" : " · different age group"}</div></div></li>`).join("");
     };
     input.addEventListener("input", () => {
       active = 0;
@@ -813,7 +825,7 @@
       if (e.key === "ArrowDown") { active = Math.min(hits.length - 1, active + 1); draw(); e.preventDefault(); }
       else if (e.key === "ArrowUp") { active = Math.max(0, active - 1); draw(); e.preventDefault(); }
       else if (e.key === "Enter" && hits[active]) choose(hits[active].id);
-      else if (e.key === "Escape") { state.picking = false; renderDetail(); }
+      else if (e.key === "Escape") stopPicking();
     });
     list.addEventListener("mousedown", (e) => {
       const li = e.target.closest("li");
@@ -830,7 +842,16 @@
           <i style="background:${cmpColor(k)}"></i>
           <div><div class="cmp-title">${esc(s.name)}</div><div class="sub">${esc(s.sector)} · ${esc(s.type)} · ${esc(s.suburb)}</div></div>
           <button class="icon-btn" data-remove="${s.id}" title="Remove from comparison">&times;</button></li>`).join("")}</ul>
+        ${mixedNote(list)}
         ${state.picking ? pickerHtml() : list.length < MAX_COMPARE ? `<button class="btn-ghost" id="cmp-add">+ Add another school</button>` : ""}`;
+  }
+
+  // ACARA reports Combined schools as a whole, so their figures include year levels the others don't teach.
+  function mixedNote(list) {
+    const combined = list.filter((s) => s.type === "Combined");
+    if (!combined.length || combined.length === list.length) return "";
+    const stage = sharedStages(list)[0];
+    return `<p class="note">Compared as ${stage} schools. ${combined.map((s) => esc(shortName(s))).join(", ")}: figures cover the whole school${combined.length === 1 && combined[0].yr ? ` (${esc(combined[0].yr)})` : ""}, not only its ${stage} years.</p>`;
   }
 
   function singleHead(s, col) {
@@ -888,7 +909,7 @@
     }));
     el.querySelectorAll("[data-remove]").forEach((b) => (b.onclick = () => removeCompared(+b.dataset.remove)));
     const add = $("cmp-add");
-    if (add) add.onclick = () => { state.picking = true; renderDetail(); };
+    if (add) add.onclick = () => { state.picking = true; render(); };
     if (state.picking) setupPicker();
     const sc = $("show-catchment");
     if (sc) sc.onclick = (e) => { e.preventDefault(); showCatchmentOf(s); };
@@ -897,6 +918,12 @@
   // Map clicks and search picks land here: while picking they join the comparison, otherwise they select.
   function choose(id, fly = true) {
     if (!state.picking || state.selected == null) return select(id, fly);
+    const s = DATA.schools.find((x) => x.id === id);
+    if (!inView(id) && !canCompare(s)) {
+      state.pickNote = `${s.name} is a ${s.type.toLowerCase()} school, a different age group.`;
+      return renderDetail();
+    }
+    state.pickNote = "";
     if (!inView(id)) state.compare.push(id);
     if (state.compare.length >= MAX_COMPARE - 1) state.picking = false;
     writeHash();
@@ -1042,6 +1069,7 @@
     state.selected = id;
     state.compare = [];
     state.picking = false;
+    state.pickNote = "";
     writeHash();
     render();
     const synced = syncCatchments();
@@ -1137,9 +1165,11 @@
     const id = +p.get("s");
     if (id && DATA.schools.some((s) => s.id === id)) {
       state.selected = id;
-      state.compare = [...new Set((p.get("cmp") || "").split(",").map(Number))]
-        .filter((c) => c && c !== id && DATA.schools.some((s) => s.id === c))
-        .slice(0, MAX_COMPARE - 1);
+      // Drop ids from older links that mix age groups; canCompare() checks against those kept so far.
+      for (const c of new Set((p.get("cmp") || "").split(",").map(Number))) {
+        const s = DATA.schools.find((x) => x.id === c);
+        if (s && c !== id && state.compare.length < MAX_COMPARE - 1 && canCompare(s)) state.compare.push(c);
+      }
     }
     if (CATCH_LEVELS.includes(p.get("c"))) state.catchMode = p.get("c");
     if (TABS.some(([k]) => k === p.get("t"))) state.tab = p.get("t");
@@ -1274,7 +1304,7 @@
       if (e.target.matches("input, select, textarea")) return;
       if (e.key === "ArrowLeft") setYear(state.yearIdx - 1);
       else if (e.key === "ArrowRight") setYear(state.yearIdx + 1);
-      else if (e.key === "Escape" && state.picking) { state.picking = false; renderDetail(); }
+      else if (e.key === "Escape" && state.picking) stopPicking();
       else if (e.key === "Escape" && state.selected != null) select(null);
     });
 
